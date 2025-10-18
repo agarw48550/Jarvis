@@ -1,0 +1,23 @@
+llm:
+  base_url: ${LLM_BASE_URL}
+  api_key: ${LLM_API_KEY}
+  model: ${LLM_MODEL}
+
+tools:
+  google_calendar:
+    enabled: true
+    # Scopes: see https://developers.google.com/calendar/api/auth
+    scopes:
+      - https://www.googleapis.com/auth/calendar.events
+  notion:
+    enabled: true
+    default_database_id: ${NOTION_DEFAULT_DATABASE_ID}
+  smartlife:
+    enabled: true
+    # Map your friendly device names to TinyTuya parameters
+    devices:
+      # example:
+      # "bedroom lamp":
+      #   id: your_device_id
+      #   local_key: your_local_key
+      #   ip: 192.168.1.42

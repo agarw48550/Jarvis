@@ -1,0 +1,87 @@
+##### Python #####
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Packaging / build
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+jarvisai-venv/
+jarvisai-kokoro-venv/
+jarvisai-kokoro-venv312/
+
+# Caches
+.cache/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.pytype/
+.tox/
+.nox/
+
+# Coverage
+.coverage*
+coverage.xml
+htmlcov/
+
+##### Environment & Secrets #####
+.env
+.env.*
+!.env.example
+credentials.json
+token.json
+*.pem
+*.key
+*.crt
+
+##### Editors & OS #####
+.DS_Store
+.AppleDouble
+.LSOverride
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+.idea/
+.vscode/
+!.vscode/extensions.json
+
+##### Audio artifacts #####
+*.mp3
+*.wav
+*.flac
+*.aac
+*.m4a
+
+##### Model assets (large) #####
+# Kokoro / TTS models
+tools/kokoro/models/*.onnx
+tools/kokoro/**/*.onnx
+tools/kokoro/voices/voices.bin
+tools/kokoro/voices/voices.json
+
+# Piper binaries / voices
+tools/piper/
+
+##### Notebooks #####
+.ipynb_checkpoints/
+
+##### Logs & temp #####
+logs/
+*.log
+*.tmp
+*.bak
+*.swp
+*.swo
+~$*
+*.rtf

@@ -1,0 +1,25 @@
+# Core HTTP and env
+requests>=2.31.0
+python-dotenv>=1.0.1
+PyYAML>=6.0.2
+
+# Google Calendar (OAuth + API client)
+google-api-python-client>=2.141.0
+google-auth-httplib2>=0.2.0
+google-auth-oauthlib>=1.2.1
+
+# SmartLife local control
+Tinytuya>=1.13.2
+
+# Speech (already used by your code)
+speechrecognition>=3.10.4
+pyttsx3>=2.90
+pyaudio>=0.2.14
+dateparser>=1.2.0
+gTTS>=2.5.0,<2.6
+edge-tts>=6.1.12
+beautifulsoup4>=4.12.3
+pytz>=2024.1
+
+# Optional: wake word detection
+pvporcupine>=3.0.2
