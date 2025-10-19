@@ -11,6 +11,55 @@ It works with OpenAI-compatible LLMs (LM Studio locally or any compatible cloud 
 
 ---
 
+## Project timeline and evolution
+
+This timeline documents how JarvisAI grew from a simple voice loop into a fast, local-first assistant with rich tools.
+
+- Phase 1 — Stabilization and UX hardening
+  - Added wake standby and graceful shutdown marker (type "shutdown" to exit cleanly)
+  - Implemented self-hearing mitigation: pause STT while speaking, plus a short cooldown
+  - Lazy imports for faster cold starts; sentence-chunked speaking; barge-in via "stop"
+  - Repo hygiene and secrets scrub (.gitignore, .env.example)
+
+- Phase 2 — Local TTS migration (Kokoro)
+  - Replaced cloud TTS with a local Kokoro server (FastAPI + kokoro-onnx)
+  - Added /health and /synthesize endpoints; voice aliasing; speed control
+  - Helper scripts to start and test the TTS server
+
+- Phase 3 — Environment recovery
+  - Reintroduced a runnable .env.local; prefer external paths for env files for safety
+  - Sanitized wakeword keys and other secrets
+
+- Phase 4 — Kokoro bring-up
+  - Created a 3.12 venv specifically for Kokoro server deps
+  - Downloaded proper kokoro-v1.0.onnx and voices.bin; started server and verified audio
+
+- Phase 5 — Latency and quality
+  - Removed double time-stretching to eliminate metallic echo; use native Kokoro speed
+  - Implemented LLM SSE streaming with progressive TTS (speak while generating)
+
+- Phase 6 — Echo residuals
+  - Eliminated overlap by gating playback: wait for current sentence to finish before the next
+  - Added sentence de-duplication and tiny inter-chunk gaps to avoid clicks
+
+- Phase 7 — Cleanup and repo sync
+  - Removed stray audio artifacts; tightened .gitignore; cleaned README leftovers
+  - Staged, committed, and pushed changes to main
+
+- Phase 8 — Feature enrichment (browser, search, weather)
+  - Added browser helpers (YouTube/GitHub/Instagram, trending, YouTube search)
+  - Implemented a keyless weather report using Open‑Meteo; wired into the tool router and direct phrases
+
+- Phase 9 — macOS system controls
+  - Added open/quit app, close window, fullscreen toggle, and volume controls via AppleScript/open
+  - Added direct phrase triggers for snappy control (e.g., "open Safari", "mute")
+
+- Phase 10 — Features inspired by community assistants
+  - Calculator (safe AST), Wikipedia summaries/search, news headlines via RSS, and fun utilities (joke/coin/dice)
+  - Open arbitrary website or search query in the browser
+
+---
+
 ## Setup
 
 You’ll typically use two Python environments:
@@ -123,6 +172,68 @@ python scripts/tts_check.py "This is a quick TTS test."
 - Piper on Apple Silicon: prefer Kokoro (Piper binaries can have arch/dylib issues).
 
 ---
+
+## Features and capabilities
+
+Core experience
+- Wake word mode with Porcupine; classic interactive mode without wake
+- Progressive speech while the LLM is still generating (low perceived latency)
+- Barge-in: type "stop" to immediately cut speech; type "shutdown" to exit
+- Persona support via personality.yaml for tone/humor/formality/terseness (optional)
+
+Speech (TTS)
+- Engines: Kokoro (local, neural), macOS say (local), ElevenLabs, Piper, MaryTTS
+- Streaming sentence-by-sentence speaking; overlap prevention and click-free boundaries
+- Kokoro voice aliasing and speed control; optional macOS voice selection
+
+Hearing (STT)
+- SpeechRecognition + PyAudio; pause STT while speaking to avoid self-hear loops
+- Tunable pause/phrase/non-speak windows to reduce truncation
+
+LLM integration
+- OpenAI-compatible client; works with LM Studio locally or cloud providers
+- Normal chat and SSE streaming; concise, sanitized replies (no chain-of-thought leakage)
+
+Grounded web answers
+- DuckDuckGo HTML search; fetch and relevance slice of top source(s)
+- Short, direct answer with a single bracket citation like [1]
+- Optional source listing printed to console; TTS omits URLs/citations by default
+
+macOS tools and automations
+- Music control: play/pause/toggle/next/previous
+- Battery: quick status via pmset
+- Timers + Stopwatch: in-process, with status/cancel; stopwatch start/stop/reset
+- Shortcuts: run by name; alias phrases via SHORTCUTS_ALIASES
+- System controls: open/quit app, close window, toggle fullscreen, volume up/down, mute/unmute
+
+Browser and web helpers
+- Open YouTube/GitHub/Instagram, YouTube Trending
+- YouTube search for a topic
+- Open arbitrary website or treat text as a search query
+
+Utilities
+- Calculator: safe arithmetic with + - * / // % ** and constants pi, e
+- Wikipedia: concise summary and quick search results
+- Weather: current conditions via Open‑Meteo (no API key)
+- News: top headlines from default RSS feeds or custom NEWS_FEEDS
+- Fun: jokes, coin flip, dice roll (supports d20 style)
+
+Memory
+- Add/search/clear lightweight in-process notes for quick recall
+
+Direct phrase triggers (examples)
+- "open Safari", "quit Spotify", "close window", "fullscreen", "mute", "volume down"
+- "open youtube", "youtube trending", "search youtube for lo-fi"
+- "open website reddit.com", "open wikipedia.org"
+- "calculate 2+2*3", "who is Ada Lovelace", "news", "tell me a joke", "roll d20"
+- "set a timer for 2 minutes", "start stopwatch", "run shortcut 'Open Notes'"
+
+Configuration
+- .env.example documents all key envs; supports external .env path via JARVIS_DOTENV_PATH/DOTENV_PATH
+- Optional KOKORO_SPEED tuning (e.g., 1.05–1.2) for natural pace vs. latency
+
+Privacy & local-first
+- Prefers local LLM and local TTS; secrets kept out of repo; external APIs kept minimal and keyless where possible
 
 ## Privacy/Security
 - Keep `.env`, `credentials.json`, `token.json` private (already ignored in `.gitignore`).

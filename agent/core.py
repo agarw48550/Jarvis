@@ -9,11 +9,16 @@ from .tools import notion as notion_tool
 from .tools.smartlife import SmartLifeController
 from .tools import web as web_tool
 from .tools import browser as browser_tool
+from .tools import calc as calc_tool
+from .tools import wiki as wiki_tool
+from .tools import news as news_tool
+from .tools import fun as fun_tool
 from .tools import weather as weather_tool
 from .tools import time_tool
 from .tools import macos as mac
 from .tools import location as location_tool
 from . import memory as memory_tool
+from .tools import system as system_tool
 
 
 class Agent:
@@ -31,14 +36,30 @@ class Agent:
         self.persona = self._load_persona()
 
     def _load_persona(self) -> str:
-        """Load a concise persona string from personality.yaml if present."""
+        """Load a concise persona string from personality.yaml if present.
+        Uses importlib to avoid hard dependency on PyYAML during static analysis.
+        """
         try:
-            import yaml as _yaml
+            import importlib as _importlib
+            import json as _json
             path = os.getenv("PERSONALITY_FILE", "personality.yaml")
             if not os.path.exists(path):
                 return ""
-            with open(path, "r", encoding="utf-8") as f:
-                data = _yaml.safe_load(f) or {}
+            data = {}
+            if path.lower().endswith((".yaml", ".yml")):
+                try:
+                    _yaml = _importlib.import_module("yaml")
+                except Exception:
+                    return ""  # YAML file but no parser available; skip persona silently
+                with open(path, "r", encoding="utf-8") as f:
+                    data = _yaml.safe_load(f) or {}
+            else:
+                # Try JSON for non-YAML files
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        data = _json.loads(f.read())
+                except Exception:
+                    return ""
             tone = data.get("tone", {}) or {}
             style = tone.get("style", "friendly")
             humor = tone.get("humor", "light")
@@ -169,7 +190,9 @@ class Agent:
             "Tools: gcal(list_events|create_event), notion(create_page|search), smartlife(turn_on|turn_off|set_brightness), "
             "web(search|fetch), time(now), location(whereami), music(play|pause|toggle|next|previous), "
             "battery(status), timer(start|cancel|status), stopwatch(start|stop|reset|status), shortcuts(run), "
-            "memory(add|search|clear), browser(open_youtube|open_github|open_instagram|yt_trending|search_youtube), weather(report)."
+            "memory(add|search|clear), browser(open_youtube|open_github|open_instagram|yt_trending|search_youtube|open_website), "
+            "weather(report), system(open_app|quit_app|close_window|fullscreen|volume_up|volume_down|mute|unmute), "
+            "calc(calculate), wiki(summary|search), news(headlines), fun(joke|coin|dice)."
         )
         messages = [
             {"role": "system", "content": system},
@@ -454,6 +477,9 @@ class Agent:
             if action == "search_youtube":
                 topic = str(args.get("topic") or args.get("query") or args.get("value") or "").strip()
                 return browser_tool.search_youtube(topic)
+            if action == "open_website":
+                target = str(args.get("url") or args.get("site") or args.get("value") or "").strip()
+                return browser_tool.open_website(target)
 
         # Weather quick report
         if tool == "weather" and action in ("report", "weather", "get"):
@@ -478,6 +504,67 @@ class Agent:
             if w is not None:
                 bits.append(f"wind {w} kph")
             return ", ".join(bits)
+
+        # Calculator
+        if tool == "calc":
+            if action in ("calculate", "calc", "eval"):
+                expr = str(args.get("expr") or args.get("expression") or args.get("value") or "").strip()
+                return calc_tool.calculate(expr)
+
+        # Wikipedia
+        if tool == "wiki":
+            if action in ("summary", "lookup"):
+                topic = str(args.get("topic") or args.get("query") or args.get("value") or "").strip()
+                return wiki_tool.summary(topic)
+            if action == "search":
+                query = str(args.get("query") or args.get("value") or "").strip()
+                hits = wiki_tool.search(query)
+                if not hits:
+                    return "No results found."
+                return "\n".join(f"- {h['title']}" for h in hits)
+
+        # News
+        if tool == "news":
+            if action in ("headlines", "news"):
+                try:
+                    limit = int(args.get("limit", 5))
+                except Exception:
+                    limit = 5
+                heads = news_tool.headlines(limit=limit)
+                return "\n".join(f"- {h}" for h in heads) if heads else "No headlines."
+
+        # Fun
+        if tool == "fun":
+            if action == "joke":
+                return fun_tool.joke()
+            if action == "coin":
+                return fun_tool.coin()
+            if action in ("dice", "roll"):
+                sides = int(args.get("sides", 6)) if isinstance(args, dict) else 6
+                return fun_tool.dice(sides)
+
+        # System control
+        if tool == "system":
+            if action == "open_app":
+                name = str(args.get("app") or args.get("name") or args.get("value") or "").strip()
+                return system_tool.open_app(name)
+            if action == "quit_app":
+                name = str(args.get("app") or args.get("name") or args.get("value") or "").strip()
+                return system_tool.quit_app(name)
+            if action == "close_window":
+                return system_tool.close_window()
+            if action == "fullscreen":
+                return system_tool.fullscreen_toggle()
+            if action == "volume_up":
+                step = int(args.get("step", 10)) if isinstance(args, dict) else 10
+                return system_tool.volume_up(step)
+            if action == "volume_down":
+                step = int(args.get("step", 10)) if isinstance(args, dict) else 10
+                return system_tool.volume_down(step)
+            if action == "mute":
+                return system_tool.mute()
+            if action == "unmute":
+                return system_tool.unmute()
 
         # macOS tools
         if tool == "music":
@@ -651,6 +738,31 @@ class ChatSession:
             if phrase in ql:
                 return self.agent._execute_tool({"tool": "music", "action": act, "args": {"action": act}})
 
+        # Simple system control phrases
+        if ql.startswith("open "):
+            app = text.split("open ", 1)[1].strip()
+            if app:
+                return self.agent._execute_tool({"tool": "system", "action": "open_app", "args": {"app": app}})
+        if ql.startswith("quit ") or ql.startswith("close "):
+            # 'close window' handled separately; this is 'quit app'
+            if ql.startswith("close window"):
+                return self.agent._execute_tool({"tool": "system", "action": "close_window", "args": {}})
+            app = text.split(" ", 1)[1].strip()
+            if app:
+                return self.agent._execute_tool({"tool": "system", "action": "quit_app", "args": {"app": app}})
+        if ql in ("close window", "close this window"):
+            return self.agent._execute_tool({"tool": "system", "action": "close_window", "args": {}})
+        if ql in ("fullscreen", "toggle fullscreen"):
+            return self.agent._execute_tool({"tool": "system", "action": "fullscreen", "args": {}})
+        if ql in ("volume up", "increase volume"):
+            return self.agent._execute_tool({"tool": "system", "action": "volume_up", "args": {}})
+        if ql in ("volume down", "decrease volume"):
+            return self.agent._execute_tool({"tool": "system", "action": "volume_down", "args": {}})
+        if ql in ("mute", "mute volume"):
+            return self.agent._execute_tool({"tool": "system", "action": "mute", "args": {}})
+        if ql in ("unmute", "unmute volume"):
+            return self.agent._execute_tool({"tool": "system", "action": "unmute", "args": {}})
+
         # Quick browser openers
         if ql in ("open youtube", "youtube"):
             return self.agent._execute_tool({"tool": "browser", "action": "open_youtube", "args": {}})
@@ -663,6 +775,14 @@ class ChatSession:
         if ql.startswith("search youtube for "):
             topic = text.split("search youtube for ", 1)[1].strip()
             return self.agent._execute_tool({"tool": "browser", "action": "search_youtube", "args": {"topic": topic}})
+        # Open arbitrary website
+        if ql.startswith("open website "):
+            site = text.split("open website ", 1)[1].strip()
+            return self.agent._execute_tool({"tool": "browser", "action": "open_website", "args": {"value": site}})
+        # Open domain shortcuts like 'open reddit.com'
+        if ql.startswith("open ") and "." in ql and " " not in ql.split(" ", 1)[1]:
+            site = text.split("open ", 1)[1].strip()
+            return self.agent._execute_tool({"tool": "browser", "action": "open_website", "args": {"value": site}})
 
         # Weather
         import re as _re
@@ -671,6 +791,34 @@ class ChatSession:
             city = m.group(1).strip()
             if city and len(city.split()) <= 5:  # keep it compact; avoids over-matching paragraphs
                 return self.agent._execute_tool({"tool": "weather", "action": "report", "args": {"city": city}})
+
+        # Calculator quick phrases
+        if ql.startswith("calculate ") or ql.startswith("calc "):
+            expr = text.split(" ", 1)[1]
+            return self.agent._execute_tool({"tool": "calc", "action": "calculate", "args": {"expr": expr}})
+
+        # Wikipedia quick lookup
+        if ql.startswith("who is ") or ql.startswith("what is ") or ql.startswith("who was "):
+            topic = text.split(" ", 2)[2] if len(text.split(" ")) >= 3 else text
+            # prefer wiki summary which is concise; fall back to grounded web for complex questions
+            if len(topic.split()) <= 8:
+                return self.agent._execute_tool({"tool": "wiki", "action": "summary", "args": {"topic": topic}})
+
+        # News
+        if ql in ("news", "headlines", "what's the news", "latest news"):
+            return self.agent._execute_tool({"tool": "news", "action": "headlines", "args": {"limit": 5}})
+
+        # Fun utilities
+        if ql in ("tell me a joke", "joke"):
+            return self.agent._execute_tool({"tool": "fun", "action": "joke", "args": {}})
+        if ql in ("flip a coin", "coin toss", "coin"):
+            return self.agent._execute_tool({"tool": "fun", "action": "coin", "args": {}})
+        if ql.startswith("roll a dice") or ql.startswith("roll a die") or ql.startswith("roll d"):
+            # support 'roll d20' style
+            import re as _re
+            m = _re.search(r"roll\s+d?(\d+)", ql)
+            sides = int(m.group(1)) if m else 6
+            return self.agent._execute_tool({"tool": "fun", "action": "dice", "args": {"sides": sides}})
 
         # Direct stopwatch control
         if ql.startswith("start stopwatch") or ql == "start the stopwatch":

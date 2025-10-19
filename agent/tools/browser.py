@@ -44,3 +44,23 @@ def search_youtube(topic: str) -> str:
         return f"Searching YouTube for '{topic}'."
     except Exception as e:
         return f"Failed to search YouTube: {e}"
+
+
+def open_website(query: str) -> str:
+    q = (query or "").strip()
+    if not q:
+        return "Missing website."
+    # If it looks like a domain without scheme, add https://
+    url = q
+    try:
+        if not (q.startswith("http://") or q.startswith("https://")):
+            if "." in q and " " not in q:
+                url = "https://" + q
+            else:
+                # treat as a search query
+                from urllib.parse import quote_plus
+                url = f"https://www.google.com/search?q={quote_plus(q)}"
+        webbrowser.open(url)
+        return f"Opening {url}."
+    except Exception as e:
+        return f"Failed to open website: {e}"
