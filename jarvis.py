@@ -8,6 +8,15 @@ import os
 import re
 import time
 import threading
+import sys
+import wave
+try:
+    import audioop
+except Exception:
+    try:
+        import audioop_lts as audioop
+    except Exception:
+        audioop = None
 try:
     from dotenv import load_dotenv
 except Exception:
@@ -40,6 +49,125 @@ def _load_env_files():
         pass
 
 _load_env_files()
+
+# Optional: overlay UI state file for a separate macOS overlay app to read
+import json as _json
+OVERLAY_STATE_PATH = os.getenv('JARVIS_OVERLAY_STATE', '/tmp/jarvis_overlay_state.json')
+SHOW_OVERLAY = (os.getenv('JARVIS_OVERLAY', '1') == '1')
+OVERLAY_PROC = None  # background Cocoa overlay process
+
+def _overlay_write(status: str, text: str = '', level: float = 0.0, visible: bool | None = None):
+    if not SHOW_OVERLAY:
+        return
+    try:
+        data = {"status": status, "text": (text or '')[:300], "level": float(max(0.0, min(1.0, level)))}
+        if visible is not None:
+            data["visible"] = bool(visible)
+            if visible:
+                _maybe_launch_overlay()
+        with open(OVERLAY_STATE_PATH, 'w', encoding='utf-8') as f:
+            _json.dump(data, f)
+    except Exception:
+        pass
+
+def _maybe_launch_overlay():
+    """Launch the Cocoa overlay app as a background process if enabled.
+    Controlled by env JARVIS_OVERLAY_LAUNCH=1 (default 1)."""
+    if not SHOW_OVERLAY or os.getenv('JARVIS_OVERLAY_LAUNCH', '1') != '1':
+        return
+    global OVERLAY_PROC
+    try:
+        if OVERLAY_PROC is not None and OVERLAY_PROC.poll() is None:
+            return
+    except Exception:
+        pass
+    try:
+        here = os.path.abspath(os.path.dirname(__file__))
+        script = os.path.join(here, 'ui', 'overlay_app.py')
+        if os.path.isfile(script):
+            OVERLAY_PROC = subprocess.Popen(
+                [sys.executable, script],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            # Prime initial idle state (hidden until explicitly shown)
+            try:
+                with open(OVERLAY_STATE_PATH, 'w', encoding='utf-8') as f:
+                    _json.dump({"status": "idle", "text": "", "level": 0.0, "visible": False}, f)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+def _maybe_quit_overlay():
+    """Optionally terminate the overlay process when exiting.
+    Controlled by env JARVIS_OVERLAY_AUTOQUIT=1 (default 0)."""
+    if os.getenv('JARVIS_OVERLAY_AUTOQUIT', '0') != '1':
+        return
+    global OVERLAY_PROC
+    try:
+        if OVERLAY_PROC is not None and OVERLAY_PROC.poll() is None:
+            try:
+                OVERLAY_PROC.terminate()
+                OVERLAY_PROC.wait(timeout=1.0)
+            except Exception:
+                try:
+                    OVERLAY_PROC.kill()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+def _compute_wav_levels(path: str, frame_ms: int = 30) -> tuple[list[float], float]:
+    """Compute a normalized RMS envelope from a WAV file.
+    Returns (levels [0..1], frame_dt_seconds)."""
+    levels: list[float] = []
+    try:
+        with wave.open(path, 'rb') as wf:
+            n_channels = wf.getnchannels()
+            sampwidth = wf.getsampwidth()
+            framerate = wf.getframerate()
+            n_frames = wf.getnframes()
+            if framerate <= 0 or n_frames <= 0:
+                return [], frame_ms / 1000.0
+            win_frames = max(1, int(framerate * (frame_ms / 1000.0)))
+            # Read chunk by chunk
+            while True:
+                data = wf.readframes(win_frames)
+                if not data:
+                    break
+                # Convert to mono if needed
+                if n_channels > 1 and audioop is not None:
+                    try:
+                        data_mono = audioop.tomono(data, sampwidth, 0.5, 0.5)
+                    except Exception:
+                        data_mono = data
+                else:
+                    data_mono = data
+                try:
+                    if audioop is not None:
+                        rms = audioop.rms(data_mono, sampwidth)
+                    else:
+                        rms = 0
+                except Exception:
+                    rms = 0
+                levels.append(float(rms))
+            if not levels:
+                return [], frame_ms / 1000.0
+            # Normalize and lightly smooth
+            peak = max(levels) or 1.0
+            levels = [min(1.0, (v / peak) ** 0.9) for v in levels]
+            # 3-tap moving average for smoother motion
+            if len(levels) >= 3:
+                smoothed = [levels[0]]
+                for i in range(1, len(levels) - 1):
+                    smoothed.append((levels[i - 1] + levels[i] + levels[i + 1]) / 3.0)
+                smoothed.append(levels[-1])
+                levels = smoothed
+    except Exception:
+        levels = []
+    return levels, frame_ms / 1000.0
 
 def _init_tts():
     # If pyttsx3 is not available in this environment, skip initializing
@@ -112,12 +240,17 @@ def stop_speaking():
             os.remove(tmp)
         except Exception:
             pass
+    # Overlay: reset to idle when we forcibly stop
+    _overlay_write('idle', '')
 
-def _play_file_async(path: str):
-    """Play an audio file via afplay asynchronously and track process; delete on exit."""
+def _play_file_async(path: str, *, levels: list[float] | None = None, display_text: str | None = None, frame_dt: float = 0.03):
+    """Play an audio file via afplay asynchronously and track process; delete on exit.
+    If 'levels' is provided (0..1), update overlay level over time for a voice-reactive ring.
+    """
     global CURRENT_TTS_PROC, CURRENT_TTS_TMPFILE
     # Stop any prior playback first to avoid overlaps
     stop_speaking()
+    _overlay_write('speaking', (display_text or os.path.basename(path))[:300], 0.4)
     try:
         proc = subprocess.Popen(['afplay', path])
     except Exception:
@@ -127,6 +260,8 @@ def _play_file_async(path: str):
         CURRENT_TTS_PROC = proc
         # Mark for deletion when finished (if in temp area)
         CURRENT_TTS_TMPFILE = path
+    # Overlay: set speaking state
+    _overlay_write('speaking', (display_text or os.path.basename(path))[:300], 0.4)
     # Background watcher to remove temp file and clear proc
     def _watch():
         global CURRENT_TTS_PROC, CURRENT_TTS_TMPFILE
@@ -146,7 +281,28 @@ def _play_file_async(path: str):
                     os.remove(tmp)
                 except Exception:
                     pass
+            # Mark overlay idle after playback completes
+            _overlay_write('idle', '')
     threading.Thread(target=_watch, daemon=True).start()
+
+    # Optional animator for overlay level envelope
+    if levels and proc is not None:
+        token = id(proc)
+        def _animate():
+            i = 0
+            n = len(levels)
+            while i < n:
+                with CURRENT_TTS_LOCK:
+                    if CURRENT_TTS_PROC is None or id(CURRENT_TTS_PROC) != token:
+                        break
+                lvl = float(max(0.0, min(1.0, levels[i])))
+                _overlay_write('speaking', (display_text or os.path.basename(path))[:300], lvl)
+                i += 1
+                try:
+                    time.sleep(frame_dt)
+                except Exception:
+                    pass
+        threading.Thread(target=_animate, daemon=True).start()
 
 
 def _split_into_sentences(text: str) -> list[str]:
@@ -191,7 +347,8 @@ def _speak_maybe_chunked(text: str):
         # Wait for any current speech to finish to avoid overlap/echo
         while is_speaking() and not STOP_EVENT.is_set():
             time.sleep(0.02)
-        speak(sent)
+            _overlay_write('speaking', sent, 0.4)
+            speak(sent)
         # Small gap between sentences to avoid boundary clicks
         time.sleep(0.05)
 
@@ -367,7 +524,7 @@ def speak(text: str):
                     with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as f:
                         tmp = f.name
                         f.write(resp.content)
-                    _play_file_async(tmp)
+                    _play_file_async(tmp, display_text=msg)
                     return
                 except Exception as e:
                     last_err = e
@@ -395,7 +552,7 @@ def speak(text: str):
                 with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as f:
                     out = f.name
                 await communicate.save(out)
-                _play_file_async(out)
+                _play_file_async(out, display_text=msg)
             asyncio.run(_run())
             return
         except Exception as e:
@@ -438,7 +595,8 @@ def speak(text: str):
                     proc.kill()
                     raise
                 if proc.returncode == 0 and os.path.isfile(wav_out):
-                    _play_file_async(wav_out)
+                    env, dt = _compute_wav_levels(wav_out)
+                    _play_file_async(wav_out, levels=env, display_text=msg, frame_dt=dt)
                     return
                 else:
                     if debug:
@@ -485,7 +643,14 @@ def speak(text: str):
                 with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as f:
                     out = f.name
                     f.write(resp.content)
-                _play_file_async(out)
+                env = None
+                dt = 0.03
+                if ext == '.wav':
+                    try:
+                        env, dt = _compute_wav_levels(out)
+                    except Exception:
+                        env = None
+                _play_file_async(out, levels=env, display_text=msg, frame_dt=dt)
                 return
         except Exception as e:
             if debug:
@@ -514,7 +679,8 @@ def speak(text: str):
             with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
                 out = f.name
                 f.write(resp.content)
-            _play_file_async(out)
+            env, dt = _compute_wav_levels(out)
+            _play_file_async(out, levels=env, display_text=msg, frame_dt=dt)
             return
         except Exception as e:
             if debug:
@@ -538,6 +704,16 @@ def speak(text: str):
                         CURRENT_TTS_PROC = proc
                         CURRENT_TTS_TMPFILE = None
                     said = True
+                    # Overlay follow for 'say'
+                    _overlay_write('speaking', msg, 0.35)
+                    def _watch_say(p=proc):
+                        try:
+                            p.wait()
+                        except Exception:
+                            pass
+                        finally:
+                            _overlay_write('idle', '')
+                    threading.Thread(target=_watch_say, daemon=True).start()
                     # Do not wait; watcher thread not needed for 'say'
                     break
                 except Exception:
@@ -549,6 +725,15 @@ def speak(text: str):
                     with CURRENT_TTS_LOCK:
                         CURRENT_TTS_PROC = proc
                         CURRENT_TTS_TMPFILE = None
+                    _overlay_write('speaking', msg, 0.35)
+                    def _watch_say2(p=proc):
+                        try:
+                            p.wait()
+                        except Exception:
+                            pass
+                        finally:
+                            _overlay_write('idle', '')
+                    threading.Thread(target=_watch_say2, daemon=True).start()
                 except Exception:
                     pass
             return
@@ -558,8 +743,10 @@ def speak(text: str):
                 # Best-effort: pyttsx3 is synchronous; attempt to stop any playing 'say/afplay' first
                 if engine is not None:
                     stop_speaking()
+                    _overlay_write('speaking', msg, 0.35)
                     engine.say(msg)
                     engine.runAndWait()
+                    _overlay_write('idle', '')
                     return
             except Exception:
                 # Final fallback: gTTS + afplay
@@ -569,7 +756,7 @@ def speak(text: str):
                     with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as f:
                         tmp = f.name
                     t.save(tmp)
-                    _play_file_async(tmp)
+                    _play_file_async(tmp, display_text=msg)
                 except Exception:
                     print("[TTS suppressed]", msg)
     else:
@@ -588,6 +775,15 @@ def speak(text: str):
                 with CURRENT_TTS_LOCK:
                     CURRENT_TTS_PROC = proc
                     CURRENT_TTS_TMPFILE = None
+                _overlay_write('speaking', msg, 0.35)
+                def _watch_say3(p=proc):
+                    try:
+                        p.wait()
+                    except Exception:
+                        pass
+                    finally:
+                        _overlay_write('idle', '')
+                threading.Thread(target=_watch_say3, daemon=True).start()
             except Exception:
                 try:
                     from gtts import gTTS
@@ -595,7 +791,7 @@ def speak(text: str):
                     with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as f:
                         tmp = f.name
                     t.save(tmp)
-                    _play_file_async(tmp)
+                    _play_file_async(tmp, display_text=msg)
                 except Exception:
                     print("[TTS suppressed]", msg)
 
@@ -625,10 +821,14 @@ def main():
     # Lazy import to avoid requiring SpeechRecognition for TTS-only scripts
     import speech_recognition as sr
     from agent.core import ChatSession
+    # Ensure overlay is running if enabled
+    _maybe_launch_overlay()
     # If wake-word mode is enabled, run a silent background listener. On trigger, speak 'yo',
     # then handle conversation until a stop phrase is spoken, returning to standby afterwards.
     if os.getenv('WAKE_MODE', '0') == '1':
         print("Standby: listening for wake word… (type 'shutdown' + Enter to exit)")
+        _maybe_launch_overlay()
+        _overlay_write('listening', '')
         start_command_listener()
         try:
             run_wakeword_loop()
@@ -640,6 +840,7 @@ def main():
                 print("Exited", flush=True)
             except Exception:
                 pass
+            _maybe_quit_overlay()
         return
 
     # Start command listener to allow keyboard barge-in/stop even outside wake mode
@@ -673,11 +874,13 @@ def main():
     with sr.Microphone() as source:
         r.adjust_for_ambient_noise(source, duration=0.5)
         print("Listening... (say 'quit' to exit)")
+        _overlay_write('listening', '')
         while True:
             try:
                 # If TTS is speaking, wait briefly to avoid self-feedback
                 while is_speaking():
                     time.sleep(0.05)
+                _overlay_write('listening', '')
                 audio = r.listen(source, timeout=stt_timeout, phrase_time_limit=stt_max_seconds)
             except sr.WaitTimeoutError:
                 continue
@@ -690,10 +893,12 @@ def main():
                 if clean.lower().strip() in {"quit", "exit", "stop"}:
                     stop_speaking()
                     speak("Goodbye")
+                    _maybe_quit_overlay()
                     break
                 try:
                     if os.getenv('LLM_STREAM', '1') == '1' and hasattr(chat, 'ask_stream'):
                         # Speak progressively while the model is generating
+                        _overlay_write('thinking', clean)
                         gen = chat.ask_stream(clean)
                         speak_streaming(gen)
                         # After streaming completes, print the final assistant message from history
@@ -703,6 +908,7 @@ def main():
                         # Already spoken progressively
                         to_say = None
                     else:
+                        _overlay_write('thinking', clean)
                         reply = chat.ask(clean)
                         print(f"Assistant: {reply}")
                         to_say = _prepare_spoken_text(reply)
@@ -714,6 +920,7 @@ def main():
                     _speak_maybe_chunked(to_say)
                 # Small cooldown after speaking before listening resumes to avoid capturing tail audio
                 time.sleep(0.05)
+                _overlay_write('listening', '')
             except sr.UnknownValueError:
                 # Be quiet on small ASR misses to keep latency low
                 print("(didn't catch that)")
@@ -844,6 +1051,8 @@ def run_wakeword_loop():
             now = time.time()
             if idx >= 0 and now >= cooldown_until:
                 # Triggered
+                # Make overlay visible and give quick feedback
+                _overlay_write('speaking', 'yo', 0.6, visible=True)
                 speak("yo")
                 # Debounce for a short period to avoid multiple triggers on one utterance
                 cooldown_until = now + 1.0
@@ -889,6 +1098,8 @@ def run_wakeword_loop():
                     cooldown_until = time.time() + 0.3
                     print("Standby: listening for wake word… (type 'shutdown' + Enter to exit)")
                     print(f"✅ Wake word standby: listening for '{used_kw}'.")
+                    # Hide overlay until next activation
+                    _overlay_write('idle', '', 0.0, visible=False)
                 except Exception as e:
                     print(f"[wake] failed to resume mic: {e}")
         print("Shutting down standby loop.")
@@ -953,10 +1164,12 @@ def active_interaction(chat):
         # Briefly calibrate noise floor
         r.adjust_for_ambient_noise(source, duration=0.2)
         speak("I'm listening.")
+        _overlay_write('listening', '')
         while not STOP_EVENT.is_set():
             try:
                 while is_speaking():
                     time.sleep(0.05)
+                _overlay_write('listening', '')
                 audio = r.listen(source, timeout=stt_timeout, phrase_time_limit=stt_max_seconds)
             except sr.WaitTimeoutError:
                 if STOP_EVENT.is_set():
@@ -981,6 +1194,7 @@ def active_interaction(chat):
                     # Stream while generating if enabled
                     if os.getenv('LLM_STREAM', '1') == '1' and hasattr(chat, 'ask_stream'):
                         # Progressive speech: speak sentences as they form
+                        _overlay_write('thinking', clean)
                         gen = chat.ask_stream(clean)
                         speak_streaming(gen)
                         # ChatSession updates history internally; print the last assistant message for console visibility
@@ -989,6 +1203,7 @@ def active_interaction(chat):
                             print(f"Assistant: {last}")
                         to_say = None  # already spoken
                     else:
+                        _overlay_write('thinking', clean)
                         reply = chat.ask(clean)
                         print(f"Assistant: {reply}")
                         to_say = _prepare_spoken_text(reply)
@@ -999,6 +1214,7 @@ def active_interaction(chat):
                 if to_say:
                     _speak_maybe_chunked(to_say)
                 time.sleep(0.05)
+                _overlay_write('listening', '')
             except sr.UnknownValueError:
                 print("(didn't catch that)")
             except sr.RequestError as e:
@@ -1061,6 +1277,10 @@ def start_command_listener():
                             # Emit marker before hard exit for external toggles
                             try:
                                 print("Exited", flush=True)
+                            except Exception:
+                                pass
+                            try:
+                                _maybe_quit_overlay()
                             except Exception:
                                 pass
                             _os._exit(0)
