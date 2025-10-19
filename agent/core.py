@@ -8,6 +8,8 @@ from .tools import google_calendar as gcal
 from .tools import notion as notion_tool
 from .tools.smartlife import SmartLifeController
 from .tools import web as web_tool
+from .tools import browser as browser_tool
+from .tools import weather as weather_tool
 from .tools import time_tool
 from .tools import macos as mac
 from .tools import location as location_tool
@@ -161,13 +163,13 @@ class Agent:
         system = (
             persona +
             "You are a helpful desktop assistant with tools to manage Google Calendar, Notion, and SmartLife devices. "
-            "You also have tools for web search, web fetch, current time, approximate location, macOS Music control, battery status, timers and stopwatches. "
+            "You also have tools for web search, web fetch, current time, approximate location, macOS Music control, battery status, timers and stopwatches, opening common websites, YouTube search, and quick weather reports. "
             "Respond with the final answer only. Do not include your chain-of-thought, analysis, or thinking tags. "
             "When asked to perform an action requiring tools, output a JSON object on a single line with keys: tool, action, args. "
             "Tools: gcal(list_events|create_event), notion(create_page|search), smartlife(turn_on|turn_off|set_brightness), "
             "web(search|fetch), time(now), location(whereami), music(play|pause|toggle|next|previous), "
             "battery(status), timer(start|cancel|status), stopwatch(start|stop|reset|status), shortcuts(run), "
-            "memory(add|search|clear)."
+            "memory(add|search|clear), browser(open_youtube|open_github|open_instagram|yt_trending|search_youtube), weather(report)."
         )
         messages = [
             {"role": "system", "content": system},
@@ -439,6 +441,44 @@ class Agent:
             city, region, country = location_tool.where_am_i()
             return ", ".join([p for p in [city, region, country] if p]) or "Location unavailable."
 
+        # Browser helpers
+        if tool == "browser":
+            if action == "open_youtube":
+                return browser_tool.open_youtube()
+            if action == "open_github":
+                return browser_tool.open_github()
+            if action == "open_instagram":
+                return browser_tool.open_instagram()
+            if action == "yt_trending":
+                return browser_tool.yt_trending()
+            if action == "search_youtube":
+                topic = str(args.get("topic") or args.get("query") or args.get("value") or "").strip()
+                return browser_tool.search_youtube(topic)
+
+        # Weather quick report
+        if tool == "weather" and action in ("report", "weather", "get"):
+            city = str(args.get("city") or args.get("location") or args.get("q") or args.get("value") or "").strip()
+            if not city:
+                return "Missing city/location."
+            rep = weather_tool.weather_report(city)
+            if isinstance(rep, dict) and "error" in rep:
+                return rep["error"]
+            # Summarize into a short spoken-friendly line
+            t = rep.get("temperature_c")
+            w = rep.get("wind_kph")
+            cond = rep.get("condition")
+            hum = rep.get("humidity")
+            bits = [f"Weather in {rep.get('city','')}"]
+            if cond:
+                bits.append(str(cond))
+            if t is not None:
+                bits.append(f"{t}°C")
+            if hum is not None:
+                bits.append(f"{hum}% humidity")
+            if w is not None:
+                bits.append(f"wind {w} kph")
+            return ", ".join(bits)
+
         # macOS tools
         if tool == "music":
             act = str(args.get("action") or action or "").lower()
@@ -610,6 +650,27 @@ class ChatSession:
         for phrase, act in music_map.items():
             if phrase in ql:
                 return self.agent._execute_tool({"tool": "music", "action": act, "args": {"action": act}})
+
+        # Quick browser openers
+        if ql in ("open youtube", "youtube"):
+            return self.agent._execute_tool({"tool": "browser", "action": "open_youtube", "args": {}})
+        if ql in ("open github", "github"):
+            return self.agent._execute_tool({"tool": "browser", "action": "open_github", "args": {}})
+        if ql in ("open instagram", "instagram"):
+            return self.agent._execute_tool({"tool": "browser", "action": "open_instagram", "args": {}})
+        if ql in ("youtube trending", "open youtube trending", "trending on youtube"):
+            return self.agent._execute_tool({"tool": "browser", "action": "yt_trending", "args": {}})
+        if ql.startswith("search youtube for "):
+            topic = text.split("search youtube for ", 1)[1].strip()
+            return self.agent._execute_tool({"tool": "browser", "action": "search_youtube", "args": {"topic": topic}})
+
+        # Weather
+        import re as _re
+        m = _re.match(r"(?:what's|whats|what is|tell me|give me)?\s*(?:the\s*)?weather(?:\s+in\s+|\s+at\s+|\s+for\s+)?(.+)$", ql)
+        if m:
+            city = m.group(1).strip()
+            if city and len(city.split()) <= 5:  # keep it compact; avoids over-matching paragraphs
+                return self.agent._execute_tool({"tool": "weather", "action": "report", "args": {"city": city}})
 
         # Direct stopwatch control
         if ql.startswith("start stopwatch") or ql == "start the stopwatch":
