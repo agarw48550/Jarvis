@@ -1,0 +1,8 @@
+flask
+openwakeword
+faster-whisper
+piper-tts
+pyaudio
+numpy
+scipy
+requests

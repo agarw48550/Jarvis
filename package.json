@@ -1,0 +1,60 @@
+{
+  "name": "jarvis",
+  "productName": "jarvis",
+  "version": "1.0.0",
+  "description": "My Electron application description",
+  "main": ".webpack/main",
+  "scripts": {
+    "start": "electron-forge start",
+    "package": "electron-forge package",
+    "make": "electron-forge make",
+    "publish": "electron-forge publish",
+    "lint": "eslint --ext .ts,.tsx ."
+  },
+  "keywords": [],
+  "author": {
+    "name": "Ayaan",
+    "email": "agarw48550@gapps.uwcsea.edu.sg"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@electron-forge/cli": "^7.10.2",
+    "@electron-forge/maker-deb": "^7.10.2",
+    "@electron-forge/maker-rpm": "^7.10.2",
+    "@electron-forge/maker-squirrel": "^7.10.2",
+    "@electron-forge/maker-zip": "^7.10.2",
+    "@electron-forge/plugin-auto-unpack-natives": "^7.10.2",
+    "@electron-forge/plugin-fuses": "^7.10.2",
+    "@electron-forge/plugin-webpack": "^7.10.2",
+    "@electron/fuses": "^1.8.0",
+    "@typescript-eslint/eslint-plugin": "^5.62.0",
+    "@typescript-eslint/parser": "^5.62.0",
+    "@vercel/webpack-asset-relocator-loader": "^1.7.3",
+    "autoprefixer": "^10.4.22",
+    "css-loader": "^6.11.0",
+    "electron": "39.2.6",
+    "eslint": "^8.57.1",
+    "eslint-plugin-import": "^2.32.0",
+    "fork-ts-checker-webpack-plugin": "^7.3.0",
+    "node-loader": "^2.1.0",
+    "postcss": "^8.5.6",
+    "style-loader": "^3.3.4",
+    "tailwindcss": "^4.1.17",
+    "ts-loader": "^9.5.4",
+    "typescript": "~4.5.4"
+  },
+  "dependencies": {
+    "@emotion/is-prop-valid": "^1.4.0",
+    "@google/generative-ai": "^0.24.1",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "better-sqlite3": "^12.5.0",
+    "electron-squirrel-startup": "^1.0.1",
+    "framer-motion": "^12.23.25",
+    "pouchdb": "^9.0.0",
+    "pouchdb-find": "^9.0.0",
+    "react": "^19.2.1",
+    "react-dom": "^19.2.1",
+    "zustand": "^5.0.9"
+  }
+}
