@@ -1,15 +1,17 @@
 import React from 'react';
 import { motion } from 'framer-motion';
 
-const stateColors = {
+const stateColors: Record<string, string> = {
     idle: 'from-slate-500 to-slate-600',
     listening: 'from-blue-500 to-cyan-400',
+    processing: 'from-yellow-500 to-orange-400',
     thinking: 'from-purple-500 to-pink-500',
     speaking: 'from-emerald-500 to-teal-400',
+    error: 'from-red-500 to-red-600',
 };
 
 interface VoiceOrbProps {
-    state: 'idle' | 'listening' | 'thinking' | 'speaking';
+    state: 'idle' | 'listening' | 'processing' | 'thinking' | 'speaking' | 'error';
 }
 
 export function VoiceOrb({ state }: VoiceOrbProps) {

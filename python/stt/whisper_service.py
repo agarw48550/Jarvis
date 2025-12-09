@@ -1,21 +1,57 @@
-from faster_whisper import WhisperModel
+#!/usr/bin/env python3
+"""Speech-to-Text using Faster Whisper"""
+
 import os
+from pathlib import Path
 
-class WhisperService:
-    def __init__(self, model_size="tiny", device="cpu", compute_type="int8"):
-        model_dir = os.path.join(os.getcwd(), "models")
-        if not os.path.exists(model_dir):
-            os.makedirs(model_dir)
-            
-        print(f"Loading Whisper model: {model_size} on {device}...")
-        self.model = WhisperModel(model_size, device=device, compute_type=compute_type, download_root=model_dir)
-        print("Whisper model loaded.")
+# Global model instance (lazy loaded)
+_model = None
 
-    def transcribe(self, audio_source, beam_size=5):
-        segments, info = self.model.transcribe(audio_source, beam_size=beam_size)
+def get_model():
+    global _model
+    if _model is None: 
+        print("Loading Whisper model (tiny)...")
+        try:
+            from faster_whisper import WhisperModel
+            _model = WhisperModel(
+                "tiny",
+                device="cpu",
+                compute_type="int8"
+            )
+            print("✅ Whisper model loaded!")
+        except Exception as e:
+            print(f"❌ Failed to load Whisper:  {e}")
+            raise
+    return _model
+
+def transcribe_audio(audio_path:  str) -> str:
+    """
+    Transcribe audio file to text. 
+    
+    Args:
+        audio_path: Path to audio file (WAV, MP3, etc.)
         
-        full_text = ""
-        for segment in segments:
-            full_text += segment.text + " "
-            
-        return full_text.strip(), info.language
+    Returns:
+        Transcribed text string
+    """
+    if not os.path.exists(audio_path):
+        raise FileNotFoundError(f"Audio file not found: {audio_path}")
+    
+    model = get_model()
+    
+    # Transcribe with beam search
+    segments, info = model.transcribe(
+        audio_path,
+        beam_size=5,
+        language="en",
+        vad_filter=True,  # Voice activity detection
+        vad_parameters=dict(
+            min_silence_duration_ms=500,
+            speech_pad_ms=200
+        )
+    )
+    
+    # Combine all segments
+    text = " ".join([segment.text.strip() for segment in segments])
+    
+    return text.strip()

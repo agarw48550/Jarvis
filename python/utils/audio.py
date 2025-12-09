@@ -1,60 +1,121 @@
-import pyaudio
+#!/usr/bin/env python3
+"""Audio capture and processing utilities"""
+
+import os
+import wave
+import tempfile
 import numpy as np
-import threading
-import queue
+import pyaudio
+from pathlib import Path
 
-class AudioRecorder:
-    def __init__(self, format=pyaudio.paInt16, channels=1, rate=16000, chunk=1280):
-        self.format = format
-        self.channels = channels
-        self.rate = rate
-        self.chunk = chunk
-        self.audio = pyaudio.PyAudio()
-        self.stream = None
-        self.recording = False
-        self.frames = queue.Queue()
-        self.thread = None
+TEMP_DIR = Path(tempfile.gettempdir()) / 'jarvis'
+TEMP_DIR.mkdir(exist_ok=True)
 
-    def start(self):
-        if self.recording:
-            return
+def record_until_silence(
+    max_duration: float = 10.0,
+    silence_threshold: int = 500,
+    silence_duration:  float = 1.5,
+    sample_rate: int = 16000
+) -> str:
+    """
+    Record audio until silence is detected or max duration reached.
+    
+    Args:
+        max_duration: Maximum recording time in seconds
+        silence_threshold: RMS threshold for silence detection
+        silence_duration: How long silence must last to stop (seconds)
+        sample_rate: Audio sample rate
         
-        self.recording = True
-        self.stream = self.audio.open(format=self.format,
-                                      channels=self.channels,
-                                      rate=self.rate,
-                                      input=True,
-                                      frames_per_buffer=self.chunk)
-        self.thread = threading.Thread(target=self._record)
-        self.thread.start()
+    Returns:
+        Path to recorded WAV file
+    """
+    CHUNK = 1024
+    FORMAT = pyaudio.paInt16
+    CHANNELS = 1
+    
+    p = pyaudio.PyAudio()
+    
+    stream = p.open(
+        format=FORMAT,
+        channels=CHANNELS,
+        rate=sample_rate,
+        input=True,
+        frames_per_buffer=CHUNK
+    )
+    
+    print("🎤 Recording...")
+    
+    frames = []
+    silent_chunks = 0
+    chunks_for_silence = int(silence_duration * sample_rate / CHUNK)
+    max_chunks = int(max_duration * sample_rate / CHUNK)
+    
+    for i in range(max_chunks):
+        data = stream.read(CHUNK, exception_on_overflow=False)
+        frames.append(data)
+        
+        # Calculate RMS for silence detection
+        audio_array = np.frombuffer(data, dtype=np.int16)
+        rms = np.sqrt(np.mean(audio_array.astype(np.float32) ** 2))
+        
+        if rms < silence_threshold:
+            silent_chunks += 1
+        else:
+            silent_chunks = 0
+        
+        # Stop if silence detected for long enough
+        if silent_chunks >= chunks_for_silence and len(frames) > chunks_for_silence: 
+            print("🔇 Silence detected, stopping recording")
+            break
+    
+    stream.stop_stream()
+    stream.close()
+    p.terminate()
+    
+    # Save to WAV file
+    output_path = str(TEMP_DIR / 'recorded_audio.wav')
+    
+    with wave.open(output_path, 'wb') as wf:
+        wf.setnchannels(CHANNELS)
+        wf.setsampwidth(p.get_sample_size(FORMAT))
+        wf.setframerate(sample_rate)
+        wf.writeframes(b''.join(frames))
+    
+    print(f"✅ Recorded {len(frames) * CHUNK / sample_rate:.1f} seconds")
+    
+    return output_path
 
-    def _record(self):
-        while self.recording:
-            try:
-                data = self.stream.read(self.chunk, exception_on_overflow=False)
-                self.frames.put(data)
-            except Exception as e:
-                print(f"Error recording audio: {e}")
-                break
 
+class AudioCapture:
+    """Continuous audio capture for real-time processing"""
+    
+    def __init__(self, sample_rate=16000, chunk_size=1024):
+        self.sample_rate = sample_rate
+        self.chunk_size = chunk_size
+        self.is_recording = False
+        self._audio = None
+        self._stream = None
+    
+    def start(self):
+        self._audio = pyaudio.PyAudio()
+        self._stream = self._audio.open(
+            format=pyaudio.paInt16,
+            channels=1,
+            rate=self.sample_rate,
+            input=True,
+            frames_per_buffer=self.chunk_size
+        )
+        self.is_recording = True
+    
+    def read_chunk(self) -> bytes:
+        if self._stream and self.is_recording:
+            return self._stream.read(self.chunk_size, exception_on_overflow=False)
+        return b''
+    
     def stop(self):
-        self.recording = False
-        if self.thread:
-            self.thread.join()
-        if self.stream:
-            self.stream.stop_stream()
-            self.stream.close()
-            self.stream = None
-
-    def get_audio_chunk(self):
-        try:
-            return self.frames.get(block=False)
-        except queue.Empty:
-            return None
-
-    def clear_queue(self):
-        with self.frames.mutex:
-            self.frames.queue.clear()
-            
-    def terminate(self):
-        self.audio.terminate()
+        self.is_recording = False
+        if self._stream:
+            self._stream.stop_stream()
+            self._stream.close()
+        if self._audio:
+            self._audio.terminate()
