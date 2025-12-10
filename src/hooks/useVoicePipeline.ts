@@ -70,17 +70,43 @@ export function useVoicePipeline() {
     const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const isProcessingRef = useRef(false);
 
-    // Check Python backend health
+    // Check Python backend health with retries
     const checkBackendHealth = useCallback(async (): Promise<boolean> => {
-        try {
-            const response = await fetch(PYTHON_BACKEND + '/health', {
-                signal: AbortSignal.timeout(3000)
-            });
-            const data = await response.json();
-            return data.status === 'ok';
-        } catch {
-            return false;
+        const maxRetries = 10;
+        const retryDelay = 500; // 500ms between retries
+
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                console.log(`🔍 Backend health check attempt ${attempt}/${maxRetries}...`);
+
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 2000);
+
+                const response = await fetch(PYTHON_BACKEND + '/health', {
+                    signal: controller.signal
+                });
+
+                clearTimeout(timeoutId);
+
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.status === 'ok') {
+                        console.log('✅ Backend is running!');
+                        return true;
+                    }
+                }
+            } catch (error) {
+                console.log(`⏳ Attempt ${attempt} failed, retrying...`);
+            }
+
+            // Wait before next retry
+            if (attempt < maxRetries) {
+                await new Promise(resolve => setTimeout(resolve, retryDelay));
+            }
         }
+
+        console.log('❌ Backend not reachable after all retries');
+        return false;
     }, []);
 
     // Check internet connectivity
@@ -101,13 +127,20 @@ export function useVoicePipeline() {
 
     // Start wake word detection
     const startListening = useCallback(async () => {
-        try {
-            const backendOk = await checkBackendHealth();
-            if (!backendOk) {
-                store.setError('Python backend not running.  Start with:  python jarvis/python/main.py');
-                return;
-            }
+        // Give user feedback that we're connecting
+        console.log('🔌 Connecting to Python backend...');
 
+        const backendOk = await checkBackendHealth();
+
+        if (!backendOk) {
+            store.setError('Python backend not running. Start with: python3.11 jarvis/python/main.py');
+            return;
+        }
+
+        // Clear any previous errors
+        store.setError(null);
+
+        try {
             const response = await fetch(PYTHON_BACKEND + '/wake-word/start', {
                 method: 'POST'
             });
@@ -115,7 +148,7 @@ export function useVoicePipeline() {
 
             if (data.status === 'started' || data.status === 'already_listening') {
                 store.setState('idle');
-                store.setError(null);
+                console.log('🎤 Wake word detection started!');
 
                 // Start polling for wake word
                 pollingRef.current = setInterval(async () => {
@@ -126,19 +159,20 @@ export function useVoicePipeline() {
                         const pollData = await pollResponse.json();
 
                         if (pollData.detected) {
-                            console.log('Wake word detected!');
+                            console.log('✨ Wake word detected!');
                             await handleWakeWordDetected();
                         }
                     } catch (e) {
-                        console.error('Polling error:', e);
+                        // Silently ignore polling errors
                     }
                 }, 200);
             }
         } catch (error) {
             const errorMsg = error instanceof Error ? error.message : String(error);
-            store.setError('Failed to start listening:  ' + errorMsg);
+            store.setError('Failed to start listening: ' + errorMsg);
         }
-    }, []);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [checkBackendHealth]);
 
     // Handle wake word detection
     const handleWakeWordDetected = useCallback(async () => {
