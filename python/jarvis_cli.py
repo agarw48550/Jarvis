@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
 """
-🤖 JARVIS CLI - Terminal-Based AI Assistant
+🤖 JARVIS v5 - Full Conversational AI Assistant
 
-A simple, working terminal version of Jarvis that:
-- Uses Gemini → OpenRouter → Ollama fallback
-- Remembers facts about you
-- Speaks responses aloud
-
-Usage:
-    python jarvis_cli.py
+Features:
+- Always-on voice mode (continuous conversation)
+- Groq TTS for natural speech
+- Actions: search, open apps, reminders, time, volume
+- Persistent memory
 """
 
 import os
@@ -16,216 +14,179 @@ import sys
 import re
 from pathlib import Path
 
-# Add current directory to path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from dotenv import load_dotenv
+load_dotenv(Path(__file__).parent / ".env")
 
-# Load .env file
-env_path = Path(__file__).parent / ".env"
-if env_path.exists():
-    load_dotenv(env_path)
-    print(f"✅ Loaded .env from {env_path}")
-else:
-    print(f"⚠️ No .env file found at {env_path}")
-    print("   Create one with your API keys!")
+from llm_router import chat, check_api_keys, detect_action
+from memory import get_facts_for_prompt, add_fact, get_all_facts, clear_memory
+from tts_simple import speak, toggle_speech, is_speech_enabled, set_voice, toggle_cloud_tts
+from stt_cloud import listen
+from actions import ACTIONS, get_time
 
-from llm_router import chat, check_api_keys
-from memory import get_facts_for_prompt, add_fact, get_all_facts, clear_memory, increment_conversation_count
-from tts_simple import speak, list_voices, set_voice, set_rate
+# ============== Config ==============
+VOICE_MODE = True  # Always listen by default
 
+SYSTEM_PROMPT = """You are Jarvis, a fast and friendly voice assistant.
 
-def build_system_prompt() -> str:
-    """Build the system prompt with user facts"""
-    facts = get_facts_for_prompt()
-    
-    return f"""You are Jarvis, a helpful, friendly, and efficient personal AI assistant.
+RULES:
+1. Keep responses VERY SHORT (1 sentence preferred, 2 max)
+2. Be conversational, natural, friendly
+3. When user shares info, output: [REMEMBER: fact]
+4. For actions you can't do, be helpful but brief
 
-## YOUR PERSONALITY
-- Warm, professional, and occasionally witty
-- Concise but thorough
-- Proactive - anticipate follow-up needs
+{user_facts}
 
-## USER MEMORY
-{facts}
+You can help with: searching the web, opening apps, setting reminders, checking time, controlling volume.
 
-## INSTRUCTIONS
-1. When the user tells you personal information (name, preferences, work, etc.), 
-   you should remember it. Output a special tag: [SAVE_FACT: the fact to save]
-2. Reference known facts naturally in conversation
-3. Keep responses concise (2-4 sentences) since they will be spoken aloud
-4. Be conversational and friendly
-
-## EXAMPLES
-User: "My name is Alex and I work at Google"
-You: "Nice to meet you, Alex! Working at Google must be exciting. What do you do there? [SAVE_FACT: User's name is Alex] [SAVE_FACT: User works at Google]"
-
-User: "What's my name?"
-You: "Your name is Alex! You told me earlier. Is there anything I can help you with today?"
-
-Remember to be helpful and conversational!"""
+Example responses:
+- "Sure thing!"
+- "Got it, opening Safari now."
+- "It's 3:45 PM."
+- "I'll remember that!"
+"""
 
 
-def extract_and_save_facts(response: str) -> str:
-    """Extract [SAVE_FACT: ...] tags from response and save them"""
-    # Find all SAVE_FACT tags
-    pattern = r'\[SAVE_FACT:\s*([^\]]+)\]'
-    matches = re.findall(pattern, response)
-    
-    for fact in matches:
+def build_prompt() -> str:
+    return SYSTEM_PROMPT.format(user_facts=get_facts_for_prompt())
+
+
+def extract_memories(response: str) -> str:
+    pattern = r'\[REMEMBER:\s*([^\]]+)\]'
+    for fact in re.findall(pattern, response):
         add_fact(fact.strip())
-    
-    # Remove the tags from the response
-    clean_response = re.sub(pattern, '', response).strip()
-    # Clean up extra whitespace
-    clean_response = re.sub(r'\s+', ' ', clean_response).strip()
-    
-    return clean_response
+    return re.sub(pattern, '', response).strip()
 
 
 def print_header():
-    """Print welcome header"""
-    print("\n" + "=" * 60)
-    print("🤖 JARVIS CLI - Terminal AI Assistant")
-    print("=" * 60)
-    print("\nCommands:")
-    print("  Type your message and press Enter to chat")
-    print("  'memory'  - Show what I remember about you")
-    print("  'clear'   - Clear my memory")
-    print("  'voices'  - List available TTS voices")
-    print("  'voice N' - Set voice to index N")
-    print("  'mute'    - Toggle speech on/off")
-    print("  'keys'    - Show API key status")
-    print("  'quit'    - Exit Jarvis")
-    print("=" * 60 + "\n")
+    print("\n" + "=" * 50)
+    print("🤖 JARVIS v5 - Voice Assistant")
+    print("=" * 50)
+    print("Voice mode ON - Just speak! Or type if you prefer.")
+    print("Commands: 'type' | 'memory' | 'mute' | 'quit'")
+    print("=" * 50 + "\n")
+
+
+def get_input() -> str:
+    """Get input via voice or keyboard"""
+    global VOICE_MODE
+    
+    if VOICE_MODE:
+        text = listen()
+        if text:
+            print(f"👤 You: {text}")
+            return text
+        else:
+            # No speech detected, wait for another attempt
+            return None
+    else:
+        return input("👤 You: ").strip()
 
 
 def main():
-    """Main CLI loop"""
+    global VOICE_MODE
+    
     print_header()
     check_api_keys()
     
-    # Conversation state
     messages = []
-    speech_enabled = True
-    conversation_num = increment_conversation_count()
     
-    print(f"📝 This is conversation #{conversation_num}")
-    print("🎤 Speech is ON (say 'mute' to toggle)\n")
-    
-    # Initial greeting
+    # Personalized greeting
     facts = get_all_facts()
-    if facts:
-        # Check if we know the user's name
-        name = None
-        for f in facts:
-            if "name is" in f["fact"].lower():
-                name = f["fact"].split("name is")[-1].strip().split()[0]
-                break
-        
-        if name:
-            greeting = f"Welcome back, {name}! How can I help you today?"
-        else:
-            greeting = "Welcome back! I remember you. How can I help today?"
-    else:
-        greeting = "Hello! I'm Jarvis, your AI assistant. What's your name?"
+    name = None
+    for f in facts:
+        fact_text = f.get("fact", "").lower()
+        if "name is" in fact_text:
+            name = fact_text.split("name is")[-1].strip().split()[0].title()
+            break
     
-    print(f"🤖 Jarvis: {greeting}")
-    if speech_enabled:
-        speak(greeting)
-    print()
+    greeting = f"Hey {name}! What can I do for you?" if name else "Hey! I'm Jarvis. What's your name?"
+    print(f"🤖 {greeting}")
+    speak(greeting)
     
     while True:
         try:
-            # Get user input
-            user_input = input("👤 You: ").strip()
+            print()  # Spacing
+            user_input = get_input()
             
             if not user_input:
                 continue
             
-            # Handle special commands
-            if user_input.lower() == 'quit':
-                farewell = "Goodbye! Have a great day!"
-                print(f"\n🤖 Jarvis: {farewell}")
-                if speech_enabled:
-                    speak(farewell)
+            lower_input = user_input.lower().strip()
+            
+            # === Commands ===
+            if lower_input == 'quit' or lower_input in ['goodbye', 'bye', 'exit']:
+                bye = "See you later!"
+                print(f"\n🤖 {bye}")
+                speak(bye)
                 break
             
-            if user_input.lower() == 'memory':
+            if lower_input == 'type':
+                VOICE_MODE = False
+                print("⌨️ Switched to typing mode. Say 'voice' to switch back.")
+                continue
+            
+            if lower_input == 'voice':
+                VOICE_MODE = True
+                print("🎤 Switched to voice mode.")
+                continue
+            
+            if lower_input == 'memory':
                 facts = get_all_facts()
                 if facts:
-                    print("\n📚 Things I remember:")
+                    print("\n📚 I remember:")
                     for f in facts:
-                        print(f"   - {f['fact']}")
+                        print(f"   • {f['fact']}")
                 else:
-                    print("\n📚 I don't have any memories yet.")
-                print()
+                    print("\n📚 No memories yet.")
                 continue
             
-            if user_input.lower() == 'clear':
+            if lower_input == 'mute':
+                enabled = toggle_speech()
+                print(f"🔊 Speech {'ON' if enabled else 'OFF'}")
+                continue
+            
+            if lower_input == 'clear memory':
                 clear_memory()
-                messages = []  # Clear conversation too
-                print()
+                messages = []
+                print("🗑️ Memory cleared.")
                 continue
             
-            if user_input.lower() == 'voices':
-                list_voices()
-                print()
-                continue
+            # === Check for direct actions ===
+            action_name, params = detect_action(user_input)
             
-            if user_input.lower().startswith('voice '):
+            if action_name and action_name in ACTIONS:
+                action_fn = ACTIONS[action_name]
                 try:
-                    idx = int(user_input.split()[1])
-                    set_voice(idx)
-                except:
-                    print("⚠️ Usage: voice <number>")
-                print()
-                continue
+                    if params:
+                        result = action_fn(**params)
+                    else:
+                        result = action_fn()
+                    print(f"\n🤖 {result}")
+                    speak(result)
+                    continue
+                except Exception as e:
+                    print(f"⚠️ Action failed: {e}")
             
-            if user_input.lower() == 'mute':
-                speech_enabled = not speech_enabled
-                status = "ON" if speech_enabled else "OFF"
-                print(f"🔊 Speech is now {status}")
-                print()
-                continue
-            
-            if user_input.lower() == 'keys':
-                check_api_keys()
-                continue
-            
-            # Add to conversation history
+            # === Chat with LLM ===
             messages.append({"role": "user", "content": user_input})
+            if len(messages) > 10:
+                messages = messages[-10:]
             
-            # Keep conversation history manageable (last 10 exchanges)
-            if len(messages) > 20:
-                messages = messages[-20:]
+            response = chat(messages, build_prompt())
+            clean_response = extract_memories(response)
             
-            # Get AI response
-            print("\n🤔 Thinking...")
-            system_prompt = build_system_prompt()
-            response = chat(messages, system_prompt)
-            
-            # Extract and save any facts
-            clean_response = extract_and_save_facts(response)
-            
-            # Add to history
             messages.append({"role": "assistant", "content": clean_response})
             
-            # Display response
-            print(f"\n🤖 Jarvis: {clean_response}")
-            
-            # Speak response
-            if speech_enabled:
-                speak(clean_response)
-            
-            print()
+            print(f"\n🤖 {clean_response}")
+            speak(clean_response)
             
         except KeyboardInterrupt:
-            print("\n\n👋 Interrupted. Goodbye!")
+            print("\n\n👋 Bye!")
             break
         except Exception as e:
             print(f"\n❌ Error: {e}")
-            print()
 
 
 if __name__ == "__main__":

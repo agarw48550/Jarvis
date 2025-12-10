@@ -94,3 +94,5 @@ out/
 # Database
 *.db
 jarvis_data.db
+
+python/.env copy

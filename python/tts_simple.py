@@ -1,63 +1,146 @@
 #!/usr/bin/env python3
 """
-Simple Text-to-Speech using pyttsx3 (works offline, cross-platform)
+Text-to-Speech: Groq TTS (cloud) → macOS say (fallback)
 """
 
-import pyttsx3
+import os
+import subprocess
+import tempfile
+import platform
+from dotenv import load_dotenv
 
-# Initialize TTS engine (lazy load)
-_engine = None
+load_dotenv()
 
-def get_engine():
-    """Get or create TTS engine"""
-    global _engine
-    if _engine is None:
-        _engine = pyttsx3.init()
-        # Set properties
-        _engine.setProperty('rate', 175)  # Speed (words per minute)
-        _engine.setProperty('volume', 0.9)  # Volume (0.0 to 1.0)
-        
-        # Try to set a good voice
-        voices = _engine.getProperty('voices')
-        # Prefer a male voice if available
-        for voice in voices:
-            if 'male' in voice.name.lower() or 'daniel' in voice.name.lower():
-                _engine.setProperty('voice', voice.id)
-                break
+IS_MACOS = platform.system() == "Darwin"
+GROQ_KEY = os.getenv("GROQ_API_KEY", "")
+
+# Voice settings
+current_voice = "male"
+speech_enabled = True
+
+# Groq voice mapping
+GROQ_VOICES = {
+    "male": "Fritz-PlayAI",
+    "female": "Arista-PlayAI",
+    "british": "Basil-PlayAI",
+    "casual": "Cillian-PlayAI",
+}
+
+# macOS voice mapping
+MACOS_VOICES = {
+    "male": "Daniel",
+    "female": "Samantha",
+    "british": "Daniel",
+    "casual": "Alex",
+}
+
+
+def speak_groq(text: str) -> bool:
+    """Speak using Groq TTS API with SDK"""
+    if not GROQ_KEY:
+        return False
     
-    return _engine
+    try:
+        from groq import Groq
+        
+        client = Groq(api_key=GROQ_KEY)
+        voice = GROQ_VOICES.get(current_voice, "Fritz-PlayAI")
+        
+        # Create speech
+        response = client.audio.speech.create(
+            model="playai-tts",
+            voice=voice,
+            input=text,
+            response_format="wav"
+        )
+        
+        # Save to temp file
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            response.write_to_file(f.name)
+            audio_path = f.name
+        
+        # Play audio
+        if IS_MACOS:
+            subprocess.run(["afplay", audio_path], check=True, timeout=60)
+        else:
+            subprocess.run(["aplay", "-q", audio_path], check=True, timeout=60)
+        
+        os.unlink(audio_path)
+        return True
+        
+    except ImportError:
+        print("(install groq: pip install groq)")
+        return False
+    except Exception as e:
+        print(f"(Groq TTS error: {e})")
+        return False
+
+
+def speak_macos(text: str) -> bool:
+    """Speak using macOS say command"""
+    if not IS_MACOS:
+        return False
+    
+    voice = MACOS_VOICES.get(current_voice, "Samantha")
+    clean_text = text.replace('"', "'")
+    
+    try:
+        subprocess.run(
+            ["say", "-v", voice, clean_text],
+            check=True,
+            timeout=60
+        )
+        return True
+    except Exception as e:
+        print(f"(say error: {e})")
+        return False
+
+
+# Cloud TTS usage flag
+use_cloud_tts = True  # default to using Groq cloud TTS
 
 def speak(text: str):
-    """Speak the given text"""
-    try:
-        engine = get_engine()
-        print(f"🔊 Speaking...")
-        engine.say(text)
-        engine.runAndWait()
-    except Exception as e:
-        print(f"⚠️ TTS error: {e}")
-        print(f"   (Text was: {text})")
+    """Speak text - tries Groq first (if enabled), then macOS"""
+    if not speech_enabled or not text:
+        return
+    
+    print("🔊 Speaking...", end=" ", flush=True)
+    
+    # Try Groq TTS first if enabled
+    if use_cloud_tts and speak_groq(text):
+        print("✓")
+        return
+    
+    # Fallback to macOS
+    if speak_macos(text):
+        print("✓ (local)")
+        return
+    
+    print("✗ (no TTS)")
 
-def list_voices():
-    """List available voices"""
-    engine = get_engine()
-    voices = engine.getProperty('voices')
-    print("\n🎤 Available voices:")
-    for i, voice in enumerate(voices):
-        print(f"   {i}: {voice.name} ({voice.id})")
 
-def set_voice(voice_index: int):
-    """Set voice by index"""
-    engine = get_engine()
-    voices = engine.getProperty('voices')
-    if 0 <= voice_index < len(voices):
-        engine.setProperty('voice', voices[voice_index].id)
-        print(f"✅ Voice set to: {voices[voice_index].name}")
-    else:
-        print(f"⚠️ Invalid voice index. Use 0-{len(voices)-1}")
+def set_voice(voice: str):
+    global current_voice
+    if voice in GROQ_VOICES:
+        current_voice = voice
+        print(f"✅ Voice: {voice}")
 
-def set_rate(rate: int):
-    """Set speech rate (words per minute)"""
-    engine = get_engine()
-    engine.setProperty('rate', rate)
-    print(f"✅ Speech rate set to: {rate} wpm")
+
+
+def toggle_speech() -> bool:
+    """Toggle speech on/off"""
+    global speech_enabled
+    speech_enabled = not speech_enabled
+    return speech_enabled
+
+
+def toggle_cloud_tts() -> bool:
+    """Toggle between using Groq cloud TTS and local macOS TTS."""
+    global use_cloud_tts
+    use_cloud_tts = not use_cloud_tts
+    print(f"🔀 Cloud TTS {'ON' if use_cloud_tts else 'OFF'}")
+    return use_cloud_tts
+
+
+def is_speech_enabled() -> bool:
+    return speech_enabled
