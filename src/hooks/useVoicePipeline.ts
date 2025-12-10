@@ -63,60 +63,66 @@ export const useVoicePipelineStore = create<VoicePipelineStore>((set) => ({
     clearError: () => set({ error: null, state: 'idle' }),
 }));
 
-const PYTHON_BACKEND = 'http://localhost:5000';
+const PYTHON_BACKEND = 'http://127.0.0.1:5000';
 
 export function useVoicePipeline() {
     const store = useVoicePipelineStore();
     const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const isProcessingRef = useRef(false);
 
-    // Check Python backend health with retries
+    // Check Python backend health with retries and detailed logging
     const checkBackendHealth = useCallback(async (): Promise<boolean> => {
-        const maxRetries = 10;
-        const retryDelay = 500; // 500ms between retries
+        const maxRetries = 15;  // More retries
+        const retryDelay = 1000; // 1 second between retries
+
+        console.log('🔌 Connecting to Python backend...');
 
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
             try {
-                console.log(`🔍 Backend health check attempt ${attempt}/${maxRetries}...`);
+                console.log(`🔍 Health check attempt ${attempt}/${maxRetries}...`);
 
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 2000);
-
-                const response = await fetch(PYTHON_BACKEND + '/health', {
-                    signal: controller.signal
+                const response = await fetch('http://127.0.0.1:5000/health', {
+                    method: 'GET',
+                    headers: {
+                        'Accept': 'application/json',
+                    },
                 });
-
-                clearTimeout(timeoutId);
 
                 if (response.ok) {
                     const data = await response.json();
+                    console.log('📡 Backend response:', data);
+
                     if (data.status === 'ok') {
-                        console.log('✅ Backend is running!');
+                        console.log('✅ Backend connected successfully!');
                         return true;
                     }
                 }
             } catch (error) {
-                console.log(`⏳ Attempt ${attempt} failed, retrying...`);
+                console.log(`⏳ Attempt ${attempt} failed:`, error);
             }
 
-            // Wait before next retry
             if (attempt < maxRetries) {
                 await new Promise(resolve => setTimeout(resolve, retryDelay));
             }
         }
 
-        console.log('❌ Backend not reachable after all retries');
+        console.log('❌ Could not connect to backend after all retries');
         return false;
     }, []);
 
-    // Check internet connectivity
+    // Check internet connectivity (separate from backend)
     const checkConnectivity = useCallback(async () => {
         try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 5000);
+
             await fetch('https://www.google.com/favicon.ico', {
                 mode: 'no-cors',
                 cache: 'no-store',
-                signal: AbortSignal.timeout(3000)
+                signal: controller.signal
             });
+
+            clearTimeout(timeoutId);
             store.setIsOnline(true);
             return true;
         } catch {
@@ -127,13 +133,13 @@ export function useVoicePipeline() {
 
     // Start wake word detection
     const startListening = useCallback(async () => {
-        // Give user feedback that we're connecting
-        console.log('🔌 Connecting to Python backend...');
+        console.log('🎤 Initializing voice pipeline...');
 
         const backendOk = await checkBackendHealth();
 
         if (!backendOk) {
             store.setError('Python backend not running. Start with: python3.11 jarvis/python/main.py');
+            console.error('❌ Backend not available');
             return;
         }
 
@@ -141,21 +147,28 @@ export function useVoicePipeline() {
         store.setError(null);
 
         try {
-            const response = await fetch(PYTHON_BACKEND + '/wake-word/start', {
-                method: 'POST'
+            console.log('🎯 Starting wake word detection...');
+
+            const response = await fetch('http://127.0.0.1:5000/wake-word/start', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
             });
+
             const data = await response.json();
+            console.log('📡 Wake word response:', data);
 
             if (data.status === 'started' || data.status === 'already_listening') {
                 store.setState('idle');
-                console.log('🎤 Wake word detection started!');
+                console.log('✅ Wake word detection active!');
 
                 // Start polling for wake word
                 pollingRef.current = setInterval(async () => {
                     if (isProcessingRef.current) return;
 
                     try {
-                        const pollResponse = await fetch(PYTHON_BACKEND + '/wake-word/poll');
+                        const pollResponse = await fetch('http://127.0.0.1:5000/wake-word/poll');
                         const pollData = await pollResponse.json();
 
                         if (pollData.detected) {
@@ -166,10 +179,13 @@ export function useVoicePipeline() {
                         // Silently ignore polling errors
                     }
                 }, 200);
+            } else {
+                store.setError('Failed to start wake word: ' + (data.message || 'Unknown error'));
             }
         } catch (error) {
             const errorMsg = error instanceof Error ? error.message : String(error);
-            store.setError('Failed to start listening: ' + errorMsg);
+            console.error('❌ Error starting wake word:', errorMsg);
+            store.setError('Failed to connect: ' + errorMsg);
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [checkBackendHealth]);
