@@ -72,21 +72,28 @@ export function useVoicePipeline() {
 
     // Check Python backend health with retries and detailed logging
     const checkBackendHealth = useCallback(async (): Promise<boolean> => {
-        const maxRetries = 15;  // More retries
-        const retryDelay = 1000; // 1 second between retries
+        const maxRetries = 20;  // More retries
+        const retryDelay = 500; // 500ms between retries
 
-        console.log('🔌 Connecting to Python backend...');
+        console.log('🔌 Connecting to Python backend at http://127.0.0.1:5000...');
 
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
             try {
                 console.log(`🔍 Health check attempt ${attempt}/${maxRetries}...`);
+
+                // Create abort controller with longer timeout
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
 
                 const response = await fetch('http://127.0.0.1:5000/health', {
                     method: 'GET',
                     headers: {
                         'Accept': 'application/json',
                     },
+                    signal: controller.signal,
                 });
+
+                clearTimeout(timeoutId);
 
                 if (response.ok) {
                     const data = await response.json();
@@ -96,9 +103,15 @@ export function useVoicePipeline() {
                         console.log('✅ Backend connected successfully!');
                         return true;
                     }
+                } else {
+                    console.log(`⚠️ Backend returned status: ${response.status}`);
                 }
-            } catch (error) {
-                console.log(`⏳ Attempt ${attempt} failed:`, error);
+            } catch (error: any) {
+                if (error.name === 'AbortError') {
+                    console.log(`⏱️ Attempt ${attempt} timed out`);
+                } else {
+                    console.log(`⏳ Attempt ${attempt} failed:`, error.message);
+                }
             }
 
             if (attempt < maxRetries) {
@@ -397,14 +410,19 @@ Always respond conversationally. `;
 }
 
 async function callGemini(messages: any[], systemPrompt: string): Promise<string> {
-    const apiKey = (window as any).GEMINI_API_KEY_1 || process.env.VITE_GEMINI_API_KEY_1;
-    // Note: Using process.env for webpack compatibility as requested in earlier steps, 
-    // but falling back to window if injected, or empty if missing.
+    // Try multiple ways to get the API key
+    const apiKey = process.env.GEMINI_API_KEY_1
+        || process.env.VITE_GEMINI_API_KEY_1
+        || (window as any).GEMINI_API_KEY_1;
+
+    console.log('🔑 Gemini API key found:', apiKey ? 'Yes' : 'No');
 
     if (!apiKey) {
-        // Allow trying other providers if key missing
+        console.log('⚠️ No Gemini API key, trying next provider...');
         throw new Error('No Gemini API key');
     }
+
+    console.log('🚀 Calling Gemini API...');
 
     const response = await fetch(
         'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' + apiKey,
@@ -422,20 +440,37 @@ async function callGemini(messages: any[], systemPrompt: string): Promise<string
         }
     );
 
-    if (!response.ok) throw new Error('Gemini API error');
+    if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        console.error('❌ Gemini API error:', errorData);
+        throw new Error('Gemini API error: ' + (errorData.error?.message || response.statusText));
+    }
+
     const data = await response.json();
+    console.log('✅ Gemini response received');
     return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
 }
 
 async function callOpenRouter(messages: any[], systemPrompt: string): Promise<string> {
-    const apiKey = (window as any).OPENROUTER_API_KEY || process.env.VITE_OPENROUTER_API_KEY;
-    if (!apiKey) throw new Error('No OpenRouter API key');
+    const apiKey = process.env.OPENROUTER_API_KEY
+        || process.env.VITE_OPENROUTER_API_KEY
+        || (window as any).OPENROUTER_API_KEY;
+
+    console.log('🔑 OpenRouter API key found:', apiKey ? 'Yes' : 'No');
+
+    if (!apiKey) {
+        console.log('⚠️ No OpenRouter API key, trying next provider...');
+        throw new Error('No OpenRouter API key');
+    }
+
+    console.log('🚀 Calling OpenRouter API...');
 
     const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
         headers: {
             'Authorization': 'Bearer ' + apiKey,
             'Content-Type': 'application/json',
+            'HTTP-Referer': 'https://jarvis-assistant.local',
         },
         body: JSON.stringify({
             model: 'meta-llama/llama-3.3-70b-instruct:free',
@@ -446,8 +481,14 @@ async function callOpenRouter(messages: any[], systemPrompt: string): Promise<st
         })
     });
 
-    if (!response.ok) throw new Error('OpenRouter error');
+    if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        console.error('❌ OpenRouter error:', errorData);
+        throw new Error('OpenRouter error');
+    }
+
     const data = await response.json();
+    console.log('✅ OpenRouter response received');
     return data.choices?.[0]?.message?.content || '';
 }
 
