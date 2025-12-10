@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Text-to-Speech: Groq TTS (Calum voice) → macOS fallback
+TTS with usage tracking to avoid rate limits
 """
 
 import os
@@ -14,38 +14,41 @@ load_dotenv()
 IS_MACOS = platform.system() == "Darwin"
 GROQ_KEY = os.getenv("GROQ_API_KEY", "")
 
-# Available Groq voices
+# Track daily usage (reset each session for simplicity)
+groq_chars_used = 0
+GROQ_DAILY_LIMIT = 3000  # Leave buffer before 3600 limit
+
 VOICES = {
-    "calum": "Calum-PlayAI",      # Natural, friendly male
-    "cillian": "Cillian-PlayAI",  # Casual male
-    "atlas": "Atlas-PlayAI",      # Professional male
-    "fritz": "Fritz-PlayAI",      # Clear male
-    "arista": "Arista-PlayAI",    # Female
-    "celeste": "Celeste-PlayAI",  # Female
-    "quinn": "Quinn-PlayAI",      # Neutral
+    "calum": "Calum-PlayAI",
+    "cillian": "Cillian-PlayAI",
+    "atlas": "Atlas-PlayAI",
+    "fritz": "Fritz-PlayAI",
+    "arista": "Arista-PlayAI",
+    "celeste": "Celeste-PlayAI",
 }
 
-# macOS fallback
-MACOS_VOICES = {"male": "Daniel", "female": "Samantha"}
-
-current_voice = "calum"  # Default to Calum
+current_voice = "calum"
 speech_enabled = True
 
 
 def speak_groq(text: str) -> bool:
-    """Speak using Groq TTS"""
+    global groq_chars_used
+    
     if not GROQ_KEY:
+        return False
+    
+    # Check if we're near the limit
+    if groq_chars_used + len(text) > GROQ_DAILY_LIMIT:
+        print("(Groq TTS limit reached, using local)")
         return False
     
     try:
         from groq import Groq
         client = Groq(api_key=GROQ_KEY)
         
-        voice_id = VOICES.get(current_voice, "Calum-PlayAI")
-        
         response = client.audio.speech.create(
             model="playai-tts",
-            voice=voice_id,
+            voice=VOICES.get(current_voice, "Calum-PlayAI"),
             input=text,
             response_format="wav"
         )
@@ -54,16 +57,15 @@ def speak_groq(text: str) -> bool:
             response.write_to_file(f.name)
             audio_path = f.name
         
-        if IS_MACOS:
-            subprocess.run(["afplay", audio_path], check=True, timeout=60)
-        else:
-            subprocess.run(["aplay", "-q", audio_path], check=True, timeout=60)
-        
+        subprocess.run(["afplay", audio_path], check=True, timeout=60)
         os.unlink(audio_path)
+        
+        groq_chars_used += len(text)
         return True
         
     except Exception as e:
-        print(f"(TTS error: {e})")
+        if "rate_limit" in str(e).lower() or "429" in str(e):
+            groq_chars_used = GROQ_DAILY_LIMIT  # Mark as exhausted
         return False
 
 
@@ -85,26 +87,22 @@ def speak(text: str):
     
     if speak_groq(text):
         print("✓")
-        return
-    
-    if speak_macos(text):
+    elif speak_macos(text):
         print("✓ (local)")
-        return
-    
-    print("✗")
+    else:
+        print("✗")
 
 
-def set_voice(voice: str):
+def set_voice(voice: str) -> str:
     global current_voice
-    voice = voice.lower()
-    if voice in VOICES:
-        current_voice = voice
-        return f"Voice changed to {voice}."
+    if voice.lower() in VOICES:
+        current_voice = voice.lower()
+        return f"Voice set to {voice}."
     return f"Unknown voice. Available: {', '.join(VOICES.keys())}"
 
 
 def list_voices() -> str:
-    return "Available voices: " + ", ".join(VOICES.keys())
+    return f"Available voices: {', '.join(VOICES.keys())}"
 
 
 def toggle_speech() -> bool:
