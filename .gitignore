@@ -95,4 +95,16 @@ out/
 *.db
 jarvis_data.db
 
+
 python/.env copy
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# Jarvis runtime data
+python/api_usage.json
+python/jarvis_memory.json
+python/reminders.json
