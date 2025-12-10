@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Jarvis Actions - Fixed for macOS
+Jarvis Actions - Real tool execution
 """
 
 import os
@@ -8,160 +8,132 @@ import subprocess
 import webbrowser
 import json
 import urllib.parse
+import requests
 from datetime import datetime
 from pathlib import Path
 
 REMINDERS_FILE = Path(__file__).parent / "reminders.json"
 
 
-def search_web(query: str) -> str:
-    """Open web search in default browser"""
-    encoded = urllib.parse.quote(query)
-    url = f"https://www.google.com/search?q={encoded}"
-    webbrowser.open(url)
-    return f"Searching for '{query}'."
+def search_web(query: str, open_browser: bool = False) -> str:
+    """
+    Search the web. If open_browser=False, tries to get actual results.
+    Falls back to opening browser if no API available.
+    """
+    # Try DuckDuckGo Instant Answer API (free, no key needed)
+    try:
+        url = f"https://api.duckduckgo.com/?q={urllib.parse.quote(query)}&format=json&no_html=1"
+        response = requests.get(url, timeout=5)
+        data = response.json()
+        
+        # Check for instant answer
+        if data.get("AbstractText"):
+            return data["AbstractText"][:300]
+        
+        # Check for related topics
+        if data.get("RelatedTopics") and len(data["RelatedTopics"]) > 0:
+            results = []
+            for topic in data["RelatedTopics"][:3]:
+                if isinstance(topic, dict) and topic.get("Text"):
+                    results.append(topic["Text"][:100])
+            if results:
+                return "Here's what I found: " + " | ".join(results)
+    except:
+        pass
+    
+    # Fallback: open browser
+    search_url = f"https://www.google.com/search?q={urllib.parse.quote(query)}"
+    webbrowser.open(search_url)
+    return f"I've opened a search for '{query}' in your browser."
 
 
 def open_app(app_name: str) -> str:
-    """Open an application on macOS"""
-    # Clean up the app name
-    app = app_name.strip().rstrip('.')
+    """Open application on macOS"""
+    app = app_name.strip().rstrip('.').title()
     
-    # Common app name mappings
-    app_mappings = {
-        "safari": "Safari",
-        "chrome": "Google Chrome",
-        "firefox": "Firefox",
-        "notes": "Notes",
-        "notion": "Notion",
-        "spotify": "Spotify",
-        "slack": "Slack",
-        "discord": "Discord",
-        "terminal": "Terminal",
-        "finder": "Finder",
-        "messages": "Messages",
-        "mail": "Mail",
-        "calendar": "Calendar",
-        "music": "Music",
-        "photos": "Photos",
-        "settings": "System Preferences",
-        "preferences": "System Preferences",
-        "vscode": "Visual Studio Code",
-        "code": "Visual Studio Code",
+    # Common mappings
+    mappings = {
+        "Safari": "Safari", "Chrome": "Google Chrome", "Firefox": "Firefox",
+        "Notes": "Notes", "Notion": "Notion", "Spotify": "Spotify",
+        "Slack": "Slack", "Discord": "Discord", "Terminal": "Terminal",
+        "Finder": "Finder", "Messages": "Messages", "Mail": "Mail",
+        "Calendar": "Calendar", "Music": "Music", "Photos": "Photos",
+        "Settings": "System Settings", "Vscode": "Visual Studio Code",
+        "Code": "Visual Studio Code", "Word": "Microsoft Word",
+        "Excel": "Microsoft Excel", "Powerpoint": "Microsoft PowerPoint",
     }
     
-    # Try to find the correct app name
-    app_lower = app.lower()
-    actual_app = app_mappings.get(app_lower, app)
+    actual_app = mappings.get(app, app)
     
     try:
-        # Method 1: Direct open -a
-        result = subprocess.run(
-            ["open", "-a", actual_app],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
-        
+        result = subprocess.run(["open", "-a", actual_app],
+                                capture_output=True, timeout=5)
         if result.returncode == 0:
             return f"Opened {actual_app}."
-        
-        # Method 2: Try with .app extension
-        result = subprocess.run(
-            ["open", "-a", f"{actual_app}.app"],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
-        
-        if result.returncode == 0:
-            return f"Opened {actual_app}."
-        
-        # Method 3: Use mdfind to locate the app
-        find_result = subprocess.run(
-            ["mdfind", f"kMDItemKind == 'Application' && kMDItemDisplayName == '*{app}*'c"],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
-        
-        if find_result.stdout.strip():
-            app_path = find_result.stdout.strip().split('\n')[0]
-            subprocess.run(["open", app_path], check=True, timeout=5)
-            return f"Opened {os.path.basename(app_path)}."
-        
-        return f"Couldn't find '{app}'. Try the exact app name."
-        
-    except subprocess.TimeoutExpired:
-        return f"Timeout opening {app}."
-    except Exception as e:
-        return f"Error opening {app}: {e}"
+        return f"Couldn't find {app}."
+    except:
+        return f"Error opening {app}."
 
 
 def get_time() -> str:
-    """Get current time and date"""
     now = datetime.now()
     return f"It's {now.strftime('%I:%M %p')} on {now.strftime('%A, %B %d')}."
 
 
-def control_volume(action: str) -> str:
-    """Control system volume on macOS"""
+def set_volume(level: int = None, action: str = None) -> str:
+    """Control volume - by percentage or action"""
     try:
+        if level is not None:
+            level = max(0, min(100, level))
+            subprocess.run(["osascript", "-e", f"set volume output volume {level}"],
+                          check=True, timeout=5)
+            return f"Volume set to {level}%."
+        
         if action == "up":
-            script = 'set volume output volume ((output volume of (get volume settings)) + 15)'
-            subprocess.run(["osascript", "-e", script], check=True, timeout=5)
+            subprocess.run(["osascript", "-e",
+                "set volume output volume ((output volume of (get volume settings)) + 15)"],
+                check=True, timeout=5)
             return "Volume up."
         
-        elif action == "down":
-            script = 'set volume output volume ((output volume of (get volume settings)) - 15)'
-            subprocess.run(["osascript", "-e", script], check=True, timeout=5)
+        if action == "down":
+            subprocess.run(["osascript", "-e",
+                "set volume output volume ((output volume of (get volume settings)) - 15)"],
+                check=True, timeout=5)
             return "Volume down."
         
-        elif action == "mute":
-            subprocess.run(["osascript", "-e", "set volume output muted true"], check=True, timeout=5)
+        if action == "mute":
+            subprocess.run(["osascript", "-e", "set volume output muted true"],
+                          check=True, timeout=5)
             return "Muted."
         
-        elif action == "unmute":
-            subprocess.run(["osascript", "-e", "set volume output muted false"], check=True, timeout=5)
+        if action == "unmute":
+            subprocess.run(["osascript", "-e", "set volume output muted false"],
+                          check=True, timeout=5)
             return "Unmuted."
         
-        elif action == "max":
-            subprocess.run(["osascript", "-e", "set volume output volume 100"], check=True, timeout=5)
-            return "Volume at maximum."
-        
-        return f"Unknown volume action: {action}"
-        
+        return "Specify volume level (0-100) or action (up/down/mute)."
     except Exception as e:
         return f"Volume control failed: {e}"
 
 
-def set_reminder(text: str) -> str:
-    """Save a reminder"""
+def add_reminder(text: str) -> str:
     reminders = load_reminders()
-    reminders.append({
-        "text": text,
-        "created": datetime.now().isoformat()
-    })
+    reminders.append({"text": text, "created": datetime.now().isoformat()})
     save_reminders(reminders)
-    return f"I'll remember: {text}"
+    return f"I'll remind you: {text}"
 
 
 def get_reminders() -> str:
-    """Get all reminders"""
     reminders = load_reminders()
     if not reminders:
-        return "No reminders set."
-    
-    lines = ["Your reminders:"]
-    for i, r in enumerate(reminders, 1):
-        lines.append(f"  {i}. {r['text']}")
-    return "\n".join(lines)
+        return "You have no reminders."
+    lines = [f"{i+1}. {r['text']}" for i, r in enumerate(reminders)]
+    return "Your reminders:\n" + "\n".join(lines)
 
 
 def clear_reminders() -> str:
-    """Clear all reminders"""
     save_reminders([])
-    return "Reminders cleared."
+    return "All reminders cleared."
 
 
 def load_reminders() -> list:
@@ -173,17 +145,58 @@ def load_reminders() -> list:
     return []
 
 
-def save_reminders(reminders: list):
-    REMINDERS_FILE.write_text(json.dumps(reminders, indent=2))
+def save_reminders(r: list):
+    REMINDERS_FILE.write_text(json.dumps(r, indent=2))
 
 
-# Action registry
-ACTIONS = {
-    "search": search_web,
-    "open": open_app,
-    "time": get_time,
-    "volume": control_volume,
-    "remind": set_reminder,
-    "reminders": get_reminders,
-    "clear_reminders": clear_reminders,
+def pause_listening() -> str:
+    return "PAUSE_LISTENING"
+
+
+def resume_listening() -> str:
+    return "RESUME_LISTENING"
+
+
+# Tool definitions for LLM
+TOOLS = {
+    "search_web": {
+        "function": search_web,
+        "description": "Search the web for information",
+        "parameters": {"query": "string"}
+    },
+    "open_app": {
+        "function": open_app,
+        "description": "Open an application",
+        "parameters": {"app_name": "string"}
+    },
+    "get_time": {
+        "function": get_time,
+        "description": "Get current time and date",
+        "parameters": {}
+    },
+    "set_volume": {
+        "function": set_volume,
+        "description": "Control system volume",
+        "parameters": {"level": "int (0-100)", "action": "up/down/mute/unmute"}
+    },
+    "add_reminder": {
+        "function": add_reminder,
+        "description": "Add a reminder",
+        "parameters": {"text": "string"}
+    },
+    "get_reminders": {
+        "function": get_reminders,
+        "description": "List all reminders",
+        "parameters": {}
+    },
+    "clear_reminders": {
+        "function": clear_reminders,
+        "description": "Clear all reminders",
+        "parameters": {}
+    },
+    "pause_listening": {
+        "function": pause_listening,
+        "description": "Stop listening temporarily",
+        "parameters": {}
+    },
 }

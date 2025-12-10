@@ -1,16 +1,13 @@
 #!/usr/bin/env python3
 """
-🤖 JARVIS v5 - Full Conversational AI Assistant
+🤖 JARVIS v6 - True Agentic AI Assistant
 
-Features:
-- Always-on voice mode (continuous conversation)
-- Groq TTS for natural speech
-- Actions: search, open apps, reminders, time, volume
-- Persistent memory
+The LLM decides which tools to use and executes them automatically.
 """
 
 import os
 import sys
+import json
 import re
 from pathlib import Path
 
@@ -19,86 +16,167 @@ sys.path.insert(0, str(Path(__file__).parent))
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 
-from llm_router import chat, check_api_keys, detect_action
+from llm_router import chat, check_api_keys
 from memory import get_facts_for_prompt, add_fact, get_all_facts, clear_memory
-from tts_simple import speak, toggle_speech, is_speech_enabled, set_voice, toggle_cloud_tts
+from tts_simple import speak, toggle_speech, is_speech_enabled, set_voice, list_voices
 from stt_cloud import listen
-from actions import ACTIONS, get_time
+from actions import TOOLS
 
-# ============== Config ==============
-VOICE_MODE = True  # Always listen by default
+# ============== Agentic System Prompt ==============
 
-SYSTEM_PROMPT = """You are Jarvis, a fast and friendly voice assistant.
+SYSTEM_PROMPT = """You are Jarvis, an intelligent voice assistant. You can perform actions using tools.
 
-RULES:
-1. Keep responses VERY SHORT (1 sentence preferred, 2 max)
-2. Be conversational, natural, friendly
-3. When user shares info, output: [REMEMBER: fact]
-4. For actions you can't do, be helpful but brief
+## AVAILABLE TOOLS
+{tools_description}
 
+## HOW TO USE TOOLS
+When you need to perform an action, output a JSON block:
+```tool
+{{"tool": "tool_name", "params": {{"param1": "value1"}}}}
+```
+
+## RULES
+1. ALWAYS use tools when the user asks you to DO something
+2. Keep spoken responses SHORT (1-2 sentences)
+3. After using a tool, briefly confirm what you did
+4. When user shares personal info, output: [REMEMBER: fact]
+5. Be natural and conversational
+
+## USER INFO
 {user_facts}
 
-You can help with: searching the web, opening apps, setting reminders, checking time, controlling volume.
+## EXAMPLES
 
-Example responses:
-- "Sure thing!"
-- "Got it, opening Safari now."
-- "It's 3:45 PM."
-- "I'll remember that!"
-"""
+User: "What time is it?"
+You: ```tool
+{{"tool": "get_time", "params": {{}}}}
+```
+
+User: "Open Safari"
+You: ```tool
+{{"tool": "open_app", "params": {{"app_name": "Safari"}}}}
+```
+
+User: "Search for pizza near me"
+You: ```tool
+{{"tool": "search_web", "params": {{"query": "pizza near me"}}}}
+```
+
+User: "Set volume to 50%"
+You: ```tool
+{{"tool": "set_volume", "params": {{"level": 50}}}}
+```
+
+User: "Turn up the volume"
+You: ```tool
+{{"tool": "set_volume", "params": {{"action": "up"}}}}
+```
+
+User: "Remind me to call mom"
+You: ```tool
+{{"tool": "add_reminder", "params": {{"text": "call mom"}}}}
+```
+
+User: "What are my reminders?"
+You: ```tool
+{{"tool": "get_reminders", "params": {{}}}}
+```
+
+User: "Stop listening" or "Pause"
+You: ```tool
+{{"tool": "pause_listening", "params": {{}}}}
+```
+
+User: "Change voice to cillian"
+You: I'll change the voice for you. [VOICE: cillian]
+
+User: "What voices are available?"
+You: Available voices: calum, cillian, atlas, fritz, arista, celeste, quinn."""
+
+
+def build_tools_description() -> str:
+    lines = []
+    for name, info in TOOLS.items():
+        params = ", ".join(f"{k}: {v}" for k, v in info["parameters"].items()) or "none"
+        lines.append(f"- {name}: {info['description']} (params: {params})")
+    return "\n".join(lines)
 
 
 def build_prompt() -> str:
-    return SYSTEM_PROMPT.format(user_facts=get_facts_for_prompt())
+    return SYSTEM_PROMPT.format(
+        tools_description=build_tools_description(),
+        user_facts=get_facts_for_prompt()
+    )
 
 
-def extract_memories(response: str) -> str:
-    pattern = r'\[REMEMBER:\s*([^\]]+)\]'
-    for fact in re.findall(pattern, response):
+def extract_and_execute_tools(response: str) -> tuple:
+    """
+    Extract tool calls from response, execute them, return results and clean response.
+    """
+    results = []
+    
+    # Find tool blocks
+    tool_pattern = r'```tool\s*\n?(.*?)\n?```'
+    matches = re.findall(tool_pattern, response, re.DOTALL)
+    
+    for match in matches:
+        try:
+            tool_call = json.loads(match.strip())
+            tool_name = tool_call.get("tool")
+            params = tool_call.get("params", {})
+            
+            if tool_name in TOOLS:
+                func = TOOLS[tool_name]["function"]
+                result = func(**params) if params else func()
+                results.append((tool_name, result))
+                print(f"   🔧 {tool_name}: {result}")
+        except json.JSONDecodeError as e:
+            print(f"   ⚠️ Invalid tool JSON: {e}")
+        except Exception as e:
+            print(f"   ⚠️ Tool error: {e}")
+    
+    # Remove tool blocks from response
+    clean = re.sub(tool_pattern, '', response, flags=re.DOTALL).strip()
+    
+    # Extract memories
+    memory_pattern = r'\[REMEMBER:\s*([^\]]+)\]'
+    for fact in re.findall(memory_pattern, clean):
         add_fact(fact.strip())
-    return re.sub(pattern, '', response).strip()
+        print(f"   💾 Saved: {fact.strip()}")
+    clean = re.sub(memory_pattern, '', clean).strip()
+    
+    # Extract voice changes
+    voice_pattern = r'\[VOICE:\s*([^\]]+)\]'
+    for voice in re.findall(voice_pattern, clean):
+        result = set_voice(voice.strip())
+        print(f"   🎤 {result}")
+    clean = re.sub(voice_pattern, '', clean).strip()
+    
+    return results, clean
 
 
 def print_header():
     print("\n" + "=" * 50)
-    print("🤖 JARVIS v5 - Voice Assistant")
+    print("🤖 JARVIS v6 - Agentic AI Assistant")
     print("=" * 50)
-    print("Voice mode ON - Just speak! Or type if you prefer.")
-    print("Commands: 'type' | 'memory' | 'mute' | 'quit'")
+    print("Just speak naturally! I'll understand and act.")
+    print("Say 'pause' to stop, 'voices' to list voices")
     print("=" * 50 + "\n")
 
 
-def get_input() -> str:
-    """Get input via voice or keyboard"""
-    global VOICE_MODE
-    
-    if VOICE_MODE:
-        text = listen()
-        if text:
-            print(f"👤 You: {text}")
-            return text
-        else:
-            # No speech detected, wait for another attempt
-            return None
-    else:
-        return input("👤 You: ").strip()
-
-
 def main():
-    global VOICE_MODE
-    
     print_header()
     check_api_keys()
     
     messages = []
+    listening_paused = False
     
-    # Personalized greeting
+    # Greeting
     facts = get_all_facts()
     name = None
     for f in facts:
-        fact_text = f.get("fact", "").lower()
-        if "name is" in fact_text:
-            name = fact_text.split("name is")[-1].strip().split()[0].title()
+        if "name is" in f.get("fact", "").lower():
+            name = f["fact"].split("name is")[-1].strip().split()[0].title()
             break
     
     greeting = f"Hey {name}! What can I do for you?" if name else "Hey! I'm Jarvis. What's your name?"
@@ -107,80 +185,84 @@ def main():
     
     while True:
         try:
-            print()  # Spacing
-            user_input = get_input()
+            print()
             
-            if not user_input:
-                continue
+            if listening_paused:
+                user_input = input("👤 (paused) Type or say 'resume': ").strip()
+                if user_input.lower() in ['resume', 'continue', 'start listening']:
+                    listening_paused = False
+                    print("🎤 Resumed listening!")
+                    speak("I'm listening again.")
+                    continue
+            else:
+                # Voice input
+                text = listen()
+                if not text:
+                    continue
+                user_input = text
+                print(f"👤 You: {user_input}")
             
-            lower_input = user_input.lower().strip()
+            lower = user_input.lower().strip()
             
-            # === Commands ===
-            if lower_input == 'quit' or lower_input in ['goodbye', 'bye', 'exit']:
-                bye = "See you later!"
-                print(f"\n🤖 {bye}")
-                speak(bye)
+            # Quick commands
+            if lower in ['quit', 'exit', 'goodbye', 'bye']:
+                speak("Goodbye!")
                 break
             
-            if lower_input == 'type':
-                VOICE_MODE = False
-                print("⌨️ Switched to typing mode. Say 'voice' to switch back.")
-                continue
-            
-            if lower_input == 'voice':
-                VOICE_MODE = True
-                print("🎤 Switched to voice mode.")
-                continue
-            
-            if lower_input == 'memory':
+            if lower == 'memory':
                 facts = get_all_facts()
                 if facts:
                     print("\n📚 I remember:")
                     for f in facts:
                         print(f"   • {f['fact']}")
                 else:
-                    print("\n📚 No memories yet.")
+                    print("📚 No memories yet.")
                 continue
             
-            if lower_input == 'mute':
-                enabled = toggle_speech()
-                print(f"🔊 Speech {'ON' if enabled else 'OFF'}")
+            if lower == 'mute':
+                toggle_speech()
+                print(f"🔊 Speech {'ON' if is_speech_enabled() else 'OFF'}")
                 continue
             
-            if lower_input == 'clear memory':
-                clear_memory()
-                messages = []
-                print("🗑️ Memory cleared.")
+            if lower == 'voices':
+                print(f"🎤 {list_voices()}")
                 continue
             
-            # === Check for direct actions ===
-            action_name, params = detect_action(user_input)
+            if lower.startswith('voice '):
+                voice = lower.replace('voice ', '')
+                result = set_voice(voice)
+                print(f"🎤 {result}")
+                speak(f"Voice changed to {voice}")
+                continue
             
-            if action_name and action_name in ACTIONS:
-                action_fn = ACTIONS[action_name]
-                try:
-                    if params:
-                        result = action_fn(**params)
-                    else:
-                        result = action_fn()
-                    print(f"\n🤖 {result}")
-                    speak(result)
-                    continue
-                except Exception as e:
-                    print(f"⚠️ Action failed: {e}")
-            
-            # === Chat with LLM ===
+            # Add to conversation
             messages.append({"role": "user", "content": user_input})
             if len(messages) > 10:
                 messages = messages[-10:]
             
+            # Get LLM response
             response = chat(messages, build_prompt())
-            clean_response = extract_memories(response)
+            
+            # Execute any tools
+            tool_results, clean_response = extract_and_execute_tools(response)
+            
+            # Check for pause command
+            for tool_name, result in tool_results:
+                if result == "PAUSE_LISTENING":
+                    listening_paused = True
+                    clean_response = "Okay, I'll stop listening. Say 'resume' when you need me."
+            
+            # If tools were executed but no verbal response, generate one
+            if tool_results and not clean_response:
+                last_tool, last_result = tool_results[-1]
+                clean_response = last_result
             
             messages.append({"role": "assistant", "content": clean_response})
             
-            print(f"\n🤖 {clean_response}")
-            speak(clean_response)
+            # Output
+            if clean_response:
+                print(f"\n🤖 {clean_response}")
+                speak(clean_response)
             
         except KeyboardInterrupt:
             print("\n\n👋 Bye!")
