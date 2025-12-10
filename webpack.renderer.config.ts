@@ -3,7 +3,7 @@ import type { Configuration } from 'webpack';
 import { rules } from './webpack.rules';
 import { plugins } from './webpack.plugins';
 
-// IMPORTANT: Add PostCSS loader for Tailwind CSS processing
+// Add PostCSS loader for Tailwind CSS v3
 rules.push({
   test: /\.css$/,
   use: [
@@ -14,7 +14,7 @@ rules.push({
       options: {
         postcssOptions: {
           plugins: [
-            '@tailwindcss/postcss',
+            'tailwindcss',
             'autoprefixer',
           ],
         },

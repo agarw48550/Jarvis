@@ -27,7 +27,6 @@
     "@electron-forge/plugin-fuses": "^7.10.2",
     "@electron-forge/plugin-webpack": "^7.10.2",
     "@electron/fuses": "^1.8.0",
-    "@tailwindcss/postcss": "^4.1.17",
     "@typescript-eslint/eslint-plugin": "^5.62.0",
     "@typescript-eslint/parser": "^5.62.0",
     "@vercel/webpack-asset-relocator-loader": "^1.7.3",
@@ -42,7 +41,7 @@
     "postcss": "^8.5.6",
     "postcss-loader": "^8.2.0",
     "style-loader": "^3.3.4",
-    "tailwindcss": "^4.1.17",
+    "tailwindcss": "^3.4.17",
     "ts-loader": "^9.5.4",
     "typescript": "^5.9.3"
   },
