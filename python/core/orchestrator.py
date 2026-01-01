@@ -12,7 +12,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.llm_router import chat, check_api_keys
+from core.llm_router import chat, check_api_keys, chat_async
+from core.self_evolution import CodeAnalyzer, CodeModifier, AdaptiveLearner, SafetyGuard
 
 
 Mode = Literal["online", "offline"]
@@ -24,6 +25,12 @@ class JarvisOrchestrator:
     def __init__(self):
         self.mode: Mode = "online"
         self.force_mode: Optional[Mode] = None  # User-forced mode
+        
+        # Self-Evolution Components
+        self.code_analyzer = CodeAnalyzer()
+        self.code_modifier = CodeModifier(self.code_analyzer)
+        self.learner = AdaptiveLearner()
+        self.safety = SafetyGuard()
         
     def check_connectivity(self) -> bool:
         """
@@ -104,10 +111,44 @@ class JarvisOrchestrator:
                     pass
             raise e
     
-    def get_status(self) -> dict:
-        """Get orchestrator status"""
-        return {
-            "mode": self.mode,
-            "forced": self.force_mode is not None,
-            "online": self.check_connectivity(),
-        }
+    async def handle_self_improvement_request(self, user_request: str):
+        """Handle requests like 'improve yourself' or 'fix that bug'"""
+        print(f"🧬 Processing improvement request: {user_request}")
+        
+        # 1. Identify which file to modify
+        files = self.code_analyzer.get_all_source_files()
+        files_list = "\n".join([f.name for f in files])
+        
+        prompt = f"""Given the user request: "{user_request}"
+Which file in this list is most relevant?
+Files:
+{files_list}
+
+Respond with JUST the filename."""
+        
+        # Use sync chat for simplicity in this step, or await chat_async
+        target_file_name = await chat_async([{"role": "user", "content": prompt}], "You are a file selector.")
+        target_file_name = target_file_name.strip()
+        
+        # Find full path
+        target_path = next((f for f in files if f.name == target_file_name), None)
+        
+        if not target_path:
+            print(f"⚠️ Could not identify a relevant file (Target: {target_file_name})")
+            return
+            
+        print(f"🎯 Target File: {target_path.name}")
+        
+        # 2. Propose Change
+        print("⏳ Generating proposal (this uses Cerebras for reasoning)...")
+        proposal = self.code_modifier.propose_change(str(target_path), user_request)
+        
+        # 3. Present to User
+        print("\n" + "="*60)
+        print(f"📢 PROPOSED CHANGE FOR: {target_path.name}")
+        print("="*60)
+        print(proposal["diff"])
+        print("="*60)
+        print("⚠️ To apply this change, you would verify safety and confirm. (Simulation Mode)")
+        
+        # In a real app, we would await user input here.

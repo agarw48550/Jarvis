@@ -17,7 +17,7 @@ from google.genai.types import (
 load_dotenv()
 
 # Exclusive Gemini 2.5 Native Audio Dialog Model
-MODEL_ID = "gemini-2.5-flash-native-audio-preview-12-2025"
+MODEL_ID = "gemini-2.5-flash-preview-native-audio-dialog"
 
 class GeminiLiveSession:
     def __init__(self, api_key: str = None, voice_name: str = "Charon"):

@@ -4,63 +4,79 @@ import sys
 import pyaudio
 import time
 import numpy as np
-import traceback
-import subprocess
-from dotenv import load_dotenv
+import signal
+import atexit
 from google import genai
 from google.genai import types
+from core.config import API_KEYS, MODELS, AUDIO, SYSTEM_PROMPT
 
-# --- 1. CLEAN START ---
-# Force kill any other hidden jarvis processes that might be holding a session open
-# We exclude the current process ID to avoid self-termination
-try:
-    current_pid = os.getpid()
-    subprocess.run(f"pgrep -f jarvis_live_cli.py | grep -v {current_pid} | xargs kill -9", shell=True, capture_output=True)
-except Exception:
-    pass
-
-load_dotenv()
-# Prioritize Key 2 and 1 to rotate away from potentially "locked" sessions
-KEYS = [os.getenv("GEMINI_API_KEY_2"), os.getenv("GEMINI_API_KEY_1"), os.getenv("GEMINI_API_KEY")]
-KEYS = [k for k in KEYS if k]
-
+# --- GLOBAL STATE ---
+KEYS = API_KEYS.gemini_keys
 if not KEYS:
     print("❌ Critical: No API keys found in .env.")
     sys.exit(1)
 
-# --- 2. CONFIGURATION ---
-MODEL = "gemini-2.5-flash-native-audio-latest"
-CHUNK_SIZE = 512
-SEND_RATE = 16000
-RECV_RATE = 24000
-THRESHOLD = 0.005 # Sensitivity for hearing user
+MODEL = MODELS.gemini_live_model
+CHUNK_SIZE = AUDIO.chunk_size
+SEND_RATE = AUDIO.input_sample_rate
+RECV_RATE = AUDIO.output_sample_rate
+THRESHOLD = AUDIO.voice_threshold
 
-# --- 3. STATE ---
 STATE = {
     "key_idx": 0,
-    "handle": None,
     "active": True,
     "is_ai_active": False,
-    "last_mic_sent_at": 0
+    "key_cooldowns": {}
 }
 
+_cleanup_done = False
+
+# --- CLEANUP HANDLERS ---
+def cleanup():
+    """Cleanup function called on exit"""
+    global _cleanup_done
+    if _cleanup_done:
+        return
+    _cleanup_done = True
+    print("\n🧹 [SYSTEM] Cleaning up resources...")
+    STATE["active"] = False
+
+atexit.register(cleanup)
+signal.signal(signal.SIGINT, lambda s, f: cleanup())
+signal.signal(signal.SIGTERM, lambda s, f: cleanup())
+
+# --- AUDIO HANDLER ---
 class UltraAudio:
     def __init__(self):
         self.pya = pyaudio.PyAudio()
-        self.in_stream = self.pya.open(format=pyaudio.paInt16, channels=1, rate=SEND_RATE, input=True, frames_per_buffer=CHUNK_SIZE)
-        self.out_stream = self.pya.open(format=pyaudio.paInt16, channels=1, rate=RECV_RATE, output=True)
+        self.in_stream = self.pya.open(
+            format=pyaudio.paInt16,
+            channels=1,
+            rate=SEND_RATE,
+            input=True,
+            frames_per_buffer=CHUNK_SIZE
+        )
+        self.out_stream = self.pya.open(
+            format=pyaudio.paInt16,
+            channels=1,
+            rate=RECV_RATE,
+            output=True
+        )
         self.playback_queue = asyncio.Queue()
         self.running = True
 
     async def playback_worker(self):
-        """Dedicated thread for playing audio pieces."""
+        """Dedicated worker for playing audio"""
         loop = asyncio.get_event_loop()
-        while self.running:
+        while self.running and STATE["active"]:
             try:
-                data = await self.playback_queue.get()
+                data = await asyncio.wait_for(self.playback_queue.get(), timeout=0.1)
                 await loop.run_in_executor(None, self.out_stream.write, data)
+            except asyncio.TimeoutError:
+                continue
             except Exception as e:
-                print(f"Playback error: {e}")
+                if self.running:
+                    print(f"Playback error: {e}")
                 continue
 
     def get_rms(self, data):
@@ -77,121 +93,214 @@ class UltraAudio:
             self.in_stream.close()
             self.out_stream.stop_stream()
             self.out_stream.close()
-        except: pass
+        except:
+            pass
         self.pya.terminate()
 
+# --- SESSION LOGIC ---
 async def start_session():
     audio = UltraAudio()
-    worker_task = asyncio.create_task(audio.playback_worker())
+    worker_task = None
+    send_task = None
+    receive_task = None
+    
+    # Key rotation with cooldown
+    now = time.time()
+    for _ in range(len(KEYS)):
+        current_k_idx = STATE["key_idx"]
+        last_error = STATE["key_cooldowns"].get(current_k_idx, 0)
+        
+        if now - last_error < 60:
+            print(f"⚠️ [ENGINE] Key {current_k_idx+1} on cooldown. Skipping.")
+            STATE["key_idx"] = (STATE["key_idx"] + 1) % len(KEYS)
+            continue
+        break
     
     key = KEYS[STATE["key_idx"]]
     print(f"\n📡 [ENGINE] Connecting to {MODEL} using Key {STATE['key_idx'] + 1}...")
     
-    client = genai.Client(api_key=key, http_options={'api_version': 'v1alpha'})
+    client = genai.Client(
+        api_key=key,
+        http_options={'api_version': MODELS.gemini_live_api_version}
+    )
     
+    # NO session resumption - fresh session each time
     config = types.LiveConnectConfig(
         response_modalities=["AUDIO"],
         input_audio_transcription=types.AudioTranscriptionConfig(),
-        # NOTE: Google Search sends data to Google servers (Privacy Consideration)
+        output_audio_transcription=types.AudioTranscriptionConfig(),
         tools=[types.Tool(google_search=types.GoogleSearch())],
-        context_window_compression=types.ContextWindowCompressionConfig(sliding_window=types.SlidingWindow()),
-        session_resumption=types.SessionResumptionConfig(handle=STATE["handle"]),
-        system_instruction="You are Jarvis, a helpful and direct AI assistant. If you need info, use tools."
+        system_instruction=SYSTEM_PROMPT
     )
 
     try:
         async with client.aio.live.connect(model=MODEL, config=config) as session:
-            print("✅ [ENGINE] Session Linked. Ready for multi-turn.")
+            print("✅ [ENGINE] Session Linked.")
+            print("🎧 [ENGINE] Listening...")
             STATE["is_ai_active"] = False
-
+            
+            worker_task = asyncio.create_task(audio.playback_worker())
+            
             async def send_loop():
-                """Clocks mic input and handles heartbeats."""
+                """Clocks mic input and handles heartbeats"""
                 chunk_duration = CHUNK_SIZE / SEND_RATE
-                while True:
+                while STATE["active"]:
                     t_start = time.perf_counter()
+                    
+                    # ALWAYS read mic to prevent buffer overflow
                     data = await asyncio.get_event_loop().run_in_executor(None, audio.read_mic)
                     
+                    # Only send to Gemini when AI is not speaking
                     if not STATE["is_ai_active"]:
                         rms = audio.get_rms(data)
-                        # NOISE GATE + HEARTBEAT:
-                        # If speaking, send data. If silent, send silence to keep socket hot.
-                        to_send = data if rms > THRESHOLD else b'\x00' * (CHUNK_SIZE * 2)
-                        await session.send_realtime_input(audio=types.Blob(data=to_send, mime_type="audio/pcm;rate=16000"))
+                        if rms > THRESHOLD:
+                            # User is speaking - send real audio
+                            await session.send_realtime_input(
+                                audio=types.Blob(data=data, mime_type="audio/pcm;rate=16000")
+                            )
                     else:
-                        # Clears mic buffer while AI speaks
-                        pass
+                        # AI is speaking - check for interruption
+                        rms = audio.get_rms(data)
+                        if rms > THRESHOLD * 2:
+                            print("🎤 [ENGINE] User interrupting...")
 
                     elapsed = time.perf_counter() - t_start
                     await asyncio.sleep(max(0, chunk_duration - elapsed))
 
             async def receive_loop():
-                """Handles all incoming messages from Gemini."""
-                async for response in session.receive():
-                    # Status Updates
-                    if response.session_resumption_update:
-                        STATE["handle"] = response.session_resumption_update.new_handle
+                """Handles all incoming messages from Gemini"""
+                try:
+                    async for response in session.receive():
+                        if not STATE["active"]:
+                            break
+                            
+                        # Content Logic
+                        if response.server_content:
+                            content = response.server_content
+                            
+                            if content.model_turn:
+                                STATE["is_ai_active"] = True
+                                for part in content.model_turn.parts:
+                                    if part.inline_data:
+                                        audio.playback_queue.put_nowait(part.inline_data.data)
+                                    if part.text:
+                                        print(f"🤖 Jarvis: {part.text}")
 
-                    if response.go_away:
-                        print(f"⚠️ [ENGINE] Server GoAway signal. Time left: {response.go_away.time_left}")
+                            if content.turn_complete:
+                                await asyncio.sleep(0.2)
+                                STATE["is_ai_active"] = False
+                                print("🎧 [ENGINE] Listening...")
 
-                    # Content Logic
-                    if response.server_content:
-                        content = response.server_content
-                        
-                        if content.model_turn:
-                            STATE["is_ai_active"] = True
-                            for part in content.model_turn.parts:
-                                if part.inline_data:
-                                    audio.playback_queue.put_nowait(part.inline_data.data)
+                            if content.interrupted:
+                                STATE["is_ai_active"] = False
+                                # Clear playback queue
+                                while not audio.playback_queue.empty():
+                                    try:
+                                        audio.playback_queue.get_nowait()
+                                    except:
+                                        break
+                                print("🚨 [ENGINE] Interrupted - Listening...")
 
-                        if content.turn_complete:
-                            await asyncio.sleep(0.3) # Settlement time
-                            STATE["is_ai_active"] = False
+                            # Transcriptions
+                            if hasattr(content, 'input_transcription') and content.input_transcription:
+                                if content.input_transcription.text:
+                                    print(f"👤 You: {content.input_transcription.text}")
+                                    
+                            if hasattr(content, 'output_transcription') and content.output_transcription:
+                                if content.output_transcription.text:
+                                    print(f"🤖 Jarvis: {content.output_transcription.text}")
 
-                        if content.interrupted:
-                            STATE["is_ai_active"] = False
-                            while not audio.playback_queue.empty(): audio.playback_queue.get_nowait()
-                            print("🚨 [ENGINE] Interruption Detected.")
+                        # Tool calls
+                        if response.tool_call:
+                            print("🛠️ [ENGINE] Using tool...")
+                            
+                        # Go away signal
+                        if response.go_away:
+                            print(f"⚠️ [ENGINE] Server ending session soon...")
+                            
+                except Exception as e:
+                    if STATE["active"]:
+                        print(f"❌ [ENGINE] Receive error: {e}")
 
-                        if content.input_transcription:
-                            print(f"👤 You: {content.input_transcription.text}")
-                        if content.output_transcription:
-                            print(f"🤖 Jarvis: {content.output_transcription.text}")
-
-                    # Tool Visibility
-                    if response.tool_call:
-                        print("🛠️ [ENGINE] Fetching live data...")
-
-            await asyncio.gather(send_loop(), receive_loop())
+            send_task = asyncio.create_task(send_loop())
+            receive_task = asyncio.create_task(receive_loop())
+            
+            # Wait for either to complete (or error)
+            done, pending = await asyncio.wait(
+                [send_task, receive_task],
+                return_when=asyncio.FIRST_COMPLETED
+            )
+            
+            # Cancel pending tasks
+            for task in pending:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
     except Exception as e:
-        # Structured error detection (check for 409 Conflict specifically)
         err_msg = str(e)
-        if "409" in err_msg or "403" in err_msg:
-            print(f"🛑 [ENGINE] Conflict/Limit (Status Code Detected). Pivoting...")
+        if "409" in err_msg:
+            print(f"🛑 [ENGINE] Session conflict. Rotating key...")
+            STATE["key_cooldowns"][STATE["key_idx"]] = time.time()
             STATE["key_idx"] = (STATE["key_idx"] + 1) % len(KEYS)
-            return True # Retry signal
+            return True
+        elif "1008" in err_msg:
+            print(f"❌ [ENGINE] Invalid model or config: {err_msg[:100]}")
+            return False
         else:
-            print(f"❌ [ENGINE] Session failed: {err_msg}")
+            print(f"❌ [ENGINE] Error: {err_msg[:100]}")
             return False
     finally:
-        worker_task.cancel()
+        if worker_task:
+            worker_task.cancel()
+            try:
+                await worker_task
+            except asyncio.CancelledError:
+                pass
+        if send_task and not send_task.done():
+            send_task.cancel()
+        if receive_task and not receive_task.done():
+            receive_task.cancel()
         audio.close()
+        
     return False
 
 async def main():
+    print("🤖 JARVIS Voice Assistant Starting...")
+    print(f"📍 Model: {MODEL}")
+    print("💡 Tip: Speak naturally. Press Ctrl+C to exit.\n")
+    
+    retry_count = 0
+    max_retries = 3
+    
     while STATE["active"]:
-        restart_needed = await start_session()
-        if not restart_needed:
-            if STATE["active"]:
-                print("🔄 [ENGINE] Restarting session in 3s...")
-                await asyncio.sleep(3)
-        else:
-            await asyncio.sleep(0.5)
+        try:
+            restart_needed = await start_session()
+            
+            if restart_needed:
+                retry_count += 1
+                if retry_count >= max_retries:
+                    print("❌ [ENGINE] Max retries reached. Exiting...")
+                    break
+                await asyncio.sleep(1)
+            else:
+                retry_count = 0
+                if STATE["active"]:
+                    print("🔄 [ENGINE] Session ended. Reconnecting in 2s...")
+                    await asyncio.sleep(2)
+                    
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            print(f"❌ [ENGINE] Unexpected error: {e}")
+            await asyncio.sleep(2)
+    
+    print("👋 [ENGINE] Goodbye!")
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        STATE["active"] = False
-        print("\n👋 [ENGINE] Offline. Goodbye.")
+        pass  # cleanup() handles this via atexit

@@ -10,6 +10,11 @@ Smart Routing Strategy:
 
 import json
 import threading
+import os
+import re
+import requests
+import random
+import asyncio
 from datetime import datetime, date
 from pathlib import Path
 from dotenv import load_dotenv
@@ -17,20 +22,17 @@ from typing import Optional
 from google import genai
 from google.genai import types
 
-load_dotenv()
+from core.config import API_KEYS, MODELS, QUOTAS, SYSTEM_PROMPT
 
 # ============== API Keys ==============
-CEREBRAS_KEY = os.getenv("CEREBRAS_API_KEY", "")
-GROQ_KEY = os.getenv("GROQ_API_KEY", "")
-OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY", "")
-GEMINI_KEYS = [k for k in [
-    os.getenv("GEMINI_API_KEY_1", ""),
-    os.getenv("GEMINI_API_KEY_2", ""),
-] if k]
+CEREBRAS_KEY = API_KEYS.cerebras_key
+GROQ_KEY = API_KEYS.groq_key
+OPENROUTER_KEY = API_KEYS.openrouter_key
+GEMINI_KEYS = API_KEYS.gemini_keys
 
 # ============== Gemini Quota Tracking ==============
 QUOTA_FILE = Path(__file__).parent.parent / "data" / "gemini_quota.json"
-MAX_DAILY_REQUESTS = 40  # 2 accounts × 20 requests/day
+MAX_DAILY_REQUESTS = QUOTAS.gemini_daily_limit
 quota_lock = threading.Lock()
 
 def load_quota_tracker() -> dict:
@@ -68,56 +70,97 @@ def increment_gemini_usage():
         save_quota_tracker(tracker)
 
 # ============== Model Configs ==============
-CEREBRAS_MODEL = "llama-3.3-70b"
-GROQ_MODEL = "llama-3.3-70b-versatile"
-GEMINI_MODEL = "gemini-2.0-flash-exp" # Updated to latest stable/preview
+CEREBRAS_MODEL = MODELS.cerebras_model
+GROQ_MODEL = MODELS.groq_model
+GEMINI_MODEL = MODELS.gemini_text_model
 
-OPENROUTER_MODELS = [
-    "meta-llama/llama-3.3-70b-instruct:free",
-    "qwen/qwen3-235b-a22b:free",
-    "mistralai/mistral-small-3.1-24b-instruct:free",
-]
+OPENROUTER_MODELS = MODELS.openrouter_models
 
 # ============== Complexity Detection ==============
 
-def detect_complexity(user_message: str) -> str:
-    """
-    Detect query complexity using keyword/heuristic analysis.
-    Returns 'simple' or 'complex'
-    """
-    text = user_message.lower().strip()
+# ============== Optimization Strategy ==============
+
+def classify_task(user_message: str) -> str:
+    """Classify the task type from user message"""
+    msg = user_message.lower()
     
-    # Complex indicators
-    complex_patterns = [
-        r'\b(code|program|function|debug|script|api|implement|build|create.*app|javascript|python|typescript|algorithm)\b',
-        r'\b(explain|analyze|compare|why|how does|research|detailed|comprehensive|strategy|plan|step.*by.*step|breakdown)\b',
-        r'\b(design|architecture|optimize|refactor|test|debugging|error handling)\b',
-        r'\b(complex|complicated|sophisticated|advanced|technical)\b',
-        r'\b(how to|tutorial|guide|walkthrough)\b',
-        r'\b(problem|issue|bug|error|fix|solve|solution)\b',
-    ]
+    patterns = {
+        'code': r'(code|program|function|debug|script|implement|build|python|javascript|typescript|html|css)',
+        'math': r'(calculate|compute|solve|equation|math|formula|\d+\s*[+\-*/]\s*\d+)',
+        'creative': r'(write|story|poem|creative|imagine|describe.*scene|essay|blog)',
+        'search': r'(search|find|look up|what is|who is|when did|current|news)',
+        'tool': r'(set.*timer|reminder|open.*app|play.*music|volume|weather)',
+    }
     
-    for pattern in complex_patterns:
-        if re.search(pattern, text):
-            return "complex"
+    for task_type, pattern in patterns.items():
+        if re.search(pattern, msg):
+            return task_type
     
-    # Simple indicators (short, casual, quick questions)
-    simple_patterns = [
-        r'^(hi|hello|hey|good morning|good afternoon|good evening|thanks|thank you|bye|goodbye)',
-        r'^\s*(what time|what\'s the time|current time|what day|what date)',
-        r'^\s*(yes|no|ok|okay|sure|nope|yep)',
-        r'^\s*(how are you|what\'s up|how\'s it going)',
-    ]
+    return 'chat'
+
+def select_providers(task_type: str) -> list:
+    """Select optimal provider chain for the task"""
+    # Map string names to function objects
+    # We use string lookups to avoid circular dependency or declaration issues
+    # But since functions are defined below, we can referencing them directly? 
+    # Python allows referencing functions defined later if we are inside a function call.
+    # But for cleaner code, let's use a lookup at runtime.
     
-    for pattern in simple_patterns:
-        if re.match(pattern, text):
-            return "simple"
+    provider_map = {
+        'code': [call_cerebras, call_groq, call_gemini],
+        'chat': [call_groq, call_cerebras, call_gemini],
+        'search': [call_groq, call_cerebras],
+        'math': [call_cerebras, call_groq, call_gemini],
+        'creative': [call_gemini, call_openrouter, call_groq],
+        'tool': [call_groq, call_cerebras],
+    }
     
-    # Default based on length and structure
-    if len(text.split()) <= 5 and '?' not in text:
-        return "simple"
+    return provider_map.get(task_type, [call_groq, call_cerebras])
+
+async def async_call_provider(provider_fn, messages, system_prompt):
+    """Wrapper to run sync provider functions in thread pool"""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, provider_fn, messages, system_prompt)
+
+async def chat_async(messages: list, system_prompt: str) -> str:
+    """Race multiple providers for speed"""
+    if not messages:
+        return "No messages."
+        
+    last_content = messages[-1].get("content", "")
+    task_type = classify_task(last_content)
+    # print(f"🧠 Task Type: {task_type}") # Debug
     
-    return "simple"  # Default to simple to save Gemini quota
+    providers = select_providers(task_type)
+    
+    # 🏎️ RACE CONDITION: For chat/tool, race the top 2
+    if task_type in ['chat', 'tool'] and len(providers) >= 2:
+        tasks = []
+        for p in providers[:2]:
+            tasks.append(asyncio.create_task(async_call_provider(p, messages, system_prompt)))
+            
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        
+        # Cancel losers
+        for t in pending:
+            t.cancel()
+            
+        # Return winner
+        for t in done:
+            try:
+                result = t.result()
+                if result: return result
+            except:
+                continue
+    
+    # Fallback or sequential
+    for p in providers:
+        try:
+            return await async_call_provider(p, messages, system_prompt)
+        except:
+            continue
+            
+    return "All AI services failed."
 
 
 # ============== Provider Functions ==============
@@ -308,35 +351,26 @@ def chat(messages: list, system_prompt: str, offline_only: bool = False) -> str:
         return "No messages provided."
     
     last_message = messages[-1].get("content", "") if messages else ""
-    complexity = detect_complexity(last_message)
+    # Try providers in order (Sequential Fallback for Sync Calls)
+    # Note: chat() is the legacy sync entry point. Use chat_async() for speed.
+    last_message = messages[-1].get("content", "") if messages else ""
+    task_type = classify_task(last_message)
+    providers = select_providers(task_type)
     
-    providers = []
-    
-    if not offline_only:
-        # Always prefer free providers first
-        if GROQ_KEY:
-            providers.append(("Groq", call_groq))
-        if CEREBRAS_KEY:
-            providers.append(("Cerebras", call_cerebras))
-        if OPENROUTER_KEY:
-            providers.append(("OpenRouter", call_openrouter))
-        
-        # Gemini reserved for complex/critical cases
-        if complexity == "complex" and GEMINI_KEYS and can_use_gemini():
-            providers.append(("Gemini", call_gemini))
-    
-    # Offline fallback (always available if running)
-    providers.append(("Ollama", call_ollama))
-    
-    # Try providers in order
+    # Offline fallback
+    if offline_only:
+        providers = [call_ollama]
+    else:
+        providers.append(call_ollama)
+
     last_error = None
-    for name, fn in providers:
+    for fn in providers:
         try:
             return fn(messages, system_prompt)
         except Exception as e:
             last_error = e
-            error_msg = str(e)[:80]
-            print(f"✗ ({error_msg})")
+            # error_msg = str(e)[:80]
+            # print(f"✗ ({error_msg})")
             continue
     
     # All providers failed
