@@ -34,43 +34,48 @@ def record_until_silence(
     CHANNELS = 1
     
     p = pyaudio.PyAudio()
-    
-    stream = p.open(
-        format=FORMAT,
-        channels=CHANNELS,
-        rate=sample_rate,
-        input=True,
-        frames_per_buffer=CHUNK
-    )
-    
-    print("🎤 Recording...")
-    
-    frames = []
-    silent_chunks = 0
-    chunks_for_silence = int(silence_duration * sample_rate / CHUNK)
-    max_chunks = int(max_duration * sample_rate / CHUNK)
-    
-    for i in range(max_chunks):
-        data = stream.read(CHUNK, exception_on_overflow=False)
-        frames.append(data)
+    try:
+        stream = p.open(
+            format=FORMAT,
+            channels=CHANNELS,
+            rate=sample_rate,
+            input=True,
+            frames_per_buffer=CHUNK
+        )
         
-        # Calculate RMS for silence detection
-        audio_array = np.frombuffer(data, dtype=np.int16)
-        rms = np.sqrt(np.mean(audio_array.astype(np.float32) ** 2))
+        print("🎤 Recording...")
         
-        if rms < silence_threshold:
-            silent_chunks += 1
-        else:
-            silent_chunks = 0
+        frames = []
+        silent_chunks = 0
+        chunks_for_silence = int(silence_duration * sample_rate / CHUNK)
+        max_chunks = int(max_duration * sample_rate / CHUNK)
         
-        # Stop if silence detected for long enough
-        if silent_chunks >= chunks_for_silence and len(frames) > chunks_for_silence: 
-            print("🔇 Silence detected, stopping recording")
-            break
-    
-    stream.stop_stream()
-    stream.close()
-    p.terminate()
+        for _ in range(max_chunks):
+            try:
+                data = stream.read(CHUNK, exception_on_overflow=False)
+            except Exception as e:
+                print(f"Error reading audio: {e}")
+                break
+            frames.append(data)
+            
+            # Calculate RMS for silence detection
+            audio_array = np.frombuffer(data, dtype=np.int16)
+            rms = np.sqrt(np.mean(audio_array.astype(np.float32) ** 2))
+            
+            if rms < silence_threshold:
+                silent_chunks += 1
+            else:
+                silent_chunks = 0
+            
+            # Stop if silence detected for long enough
+            if silent_chunks >= chunks_for_silence and len(frames) > chunks_for_silence: 
+                print("🔇 Silence detected, stopping recording")
+                break
+    finally:
+        if 'stream' in locals() and stream.is_active():
+            stream.stop_stream()
+            stream.close()
+        p.terminate()
     
     # Save to WAV file
     output_path = str(TEMP_DIR / 'recorded_audio.wav')

@@ -8,13 +8,14 @@ Smart Routing Strategy:
 - Complex queries: Gemini 1.5 Flash (if quota available) → Free models fallback
 """
 
-import os
-import re
-import requests
+import json
+import threading
 from datetime import datetime, date
 from pathlib import Path
 from dotenv import load_dotenv
 from typing import Optional
+from google import genai
+from google.genai import types
 
 load_dotenv()
 
@@ -30,6 +31,7 @@ GEMINI_KEYS = [k for k in [
 # ============== Gemini Quota Tracking ==============
 QUOTA_FILE = Path(__file__).parent.parent / "data" / "gemini_quota.json"
 MAX_DAILY_REQUESTS = 40  # 2 accounts × 20 requests/day
+quota_lock = threading.Lock()
 
 def load_quota_tracker() -> dict:
     """Load Gemini quota tracking"""
@@ -37,38 +39,38 @@ def load_quota_tracker() -> dict:
         return {"date": str(date.today()), "count": 0}
     
     try:
-        import json
         with open(QUOTA_FILE, 'r') as f:
             data = json.load(f)
         # Reset if new day
         if data.get("date") != str(date.today()):
             data = {"date": str(date.today()), "count": 0}
         return data
-    except:
+    except (FileNotFoundError, json.JSONDecodeError):
         return {"date": str(date.today()), "count": 0}
 
 def save_quota_tracker(data: dict):
     """Save Gemini quota tracking"""
     QUOTA_FILE.parent.mkdir(parents=True, exist_ok=True)
-    import json
     with open(QUOTA_FILE, 'w') as f:
         json.dump(data, f)
 
 def can_use_gemini() -> bool:
     """Check if Gemini can be used (quota available)"""
-    tracker = load_quota_tracker()
-    return tracker.get("count", 0) < MAX_DAILY_REQUESTS
+    with quota_lock:
+        tracker = load_quota_tracker()
+        return tracker.get("count", 0) < MAX_DAILY_REQUESTS
 
 def increment_gemini_usage():
     """Increment Gemini usage counter"""
-    tracker = load_quota_tracker()
-    tracker["count"] = tracker.get("count", 0) + 1
-    save_quota_tracker(tracker)
+    with quota_lock:
+        tracker = load_quota_tracker()
+        tracker["count"] = tracker.get("count", 0) + 1
+        save_quota_tracker(tracker)
 
 # ============== Model Configs ==============
 CEREBRAS_MODEL = "llama-3.3-70b"
 GROQ_MODEL = "llama-3.3-70b-versatile"
-GEMINI_MODEL = "gemini-1.5-flash"
+GEMINI_MODEL = "gemini-2.0-flash-exp" # Updated to latest stable/preview
 
 OPENROUTER_MODELS = [
     "meta-llama/llama-3.3-70b-instruct:free",
@@ -121,7 +123,7 @@ def detect_complexity(user_message: str) -> str:
 # ============== Provider Functions ==============
 
 def call_gemini(messages: list, system_prompt: str) -> str:
-    """Gemini 1.5 Flash - High quality for complex queries"""
+    """Gemini 2.5 Flash - High quality for complex queries"""
     if not GEMINI_KEYS or not can_use_gemini():
         raise Exception("Gemini not available (no keys or quota exhausted)")
     
@@ -131,29 +133,21 @@ def call_gemini(messages: list, system_prompt: str) -> str:
     last_error = None
     for key in GEMINI_KEYS:
         try:
-            import google.generativeai as genai
-            genai.configure(api_key=key)
+            client = genai.Client(api_key=key, http_options={'api_version': 'v1beta'})
             
-            # Convert messages to Gemini format
-            model = genai.GenerativeModel(GEMINI_MODEL)
+            # Format messages for new SDK
+            contents = [types.Content(role='user', parts=[types.Part(text=system_prompt)])]
+            for m in messages:
+                role = 'user' if m.get('role') == 'user' else 'model'
+                contents.append(types.Content(role=role, parts=[types.Part(text=m.get('content', ''))]))
             
-            # Build prompt with system instruction
-            full_prompt = f"{system_prompt}\n\n"
-            for msg in messages:
-                role = msg.get("role", "user")
-                content = msg.get("content", "")
-                if role == "user":
-                    full_prompt += f"User: {content}\n\n"
-                elif role == "assistant":
-                    full_prompt += f"Assistant: {content}\n\n"
-            full_prompt += "Assistant:"
-            
-            response = model.generate_content(
-                full_prompt,
-                generation_config={
-                    "temperature": 0.7,
-                    "max_output_tokens": 512,
-                }
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    temperature=0.7,
+                    max_output_tokens=512,
+                )
             )
             
             text = response.text.strip()
@@ -268,7 +262,7 @@ def call_openrouter(messages: list, system_prompt: str) -> str:
                 if text:
                     print("✓")
                     return text.strip()
-        except:
+        except requests.exceptions.RequestException:
             continue
     
     raise Exception("OpenRouter failed")

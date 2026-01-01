@@ -14,32 +14,41 @@ def extract_and_execute_tools(response: str) -> Tuple[List[Tuple[str, Any]], str
     # 2. Extract standalone JSON objects (brace counting)
     json_strs = []
     json_objects_found = []
-    brace_count = 0
-    start_idx = -1
+    in_string = False
+    escape = False
     for i, char in enumerate(response):
-        if char == '{':
-            if brace_count == 0:
-                start_idx = i
-            brace_count += 1
-        elif char == '}':
-            brace_count -= 1
-            if brace_count == 0 and start_idx >= 0:
-                json_str = response[start_idx:i+1]
-                try:
-                    obj = json.loads(json_str)
-                    if isinstance(obj, dict) and "tool" in obj and "params" in obj:
-                        json_strs.append(json_str)
-                        json_objects_found.append(obj)
-                except:
-                    pass
-                start_idx = -1
+        if char == '"' and not escape:
+            in_string = not in_string
+        
+        if char == '\\' and not escape:
+            escape = True
+        else:
+            escape = False
+            
+        if not in_string:
+            if char == '{':
+                if brace_count == 0:
+                    start_idx = i
+                brace_count += 1
+            elif char == '}':
+                brace_count -= 1
+                if brace_count == 0 and start_idx >= 0:
+                    json_str = response[start_idx:i+1]
+                    try:
+                        obj = json.loads(json_str)
+                        if isinstance(obj, dict) and "tool" in obj and "params" in obj:
+                            json_strs.append(json_str)
+                            json_objects_found.append(obj)
+                    except json.JSONDecodeError:
+                        pass
+                    start_idx = -1
 
     # Combined results
     all_calls = []
     for match in matches_code:
         try:
             all_calls.append(json.loads(match.strip()))
-        except: pass
+        except json.JSONDecodeError: pass
     all_calls.extend(json_objects_found)
 
     # Process executions
@@ -56,7 +65,7 @@ def extract_and_execute_tools(response: str) -> Tuple[List[Tuple[str, Any]], str
                 result = func(**params) if params else func()
                 results.append((tool_name, result))
         except Exception as e:
-            results.append((tool_name if 'tool_name' in locals() else "unknown", f"Error: {e}"))
+            results.append((tool_call.get("tool", "unknown"), f"Error: {e}"))
 
     # Clean the response text from tool markers
     clean = re.sub(pattern_code_blocks, '', response, flags=re.DOTALL)

@@ -30,6 +30,7 @@ sock = Sock(app)
 # ============== Global State ==============
 wake_detector = None
 is_listening = False
+listening_lock = threading.Lock()
 detection_queue = queue.Queue()
 current_voice = 'male'
 
@@ -57,8 +58,10 @@ def start_wake_word():
     global wake_detector, is_listening
     
     try:
-        if is_listening:
-            return jsonify({"status": "already_listening"})
+        with listening_lock:
+            if is_listening:
+                return jsonify({"status": "already_listening"})
+            is_listening = True
         
         from wake_word.detector import WakeWordDetector
         
@@ -73,7 +76,6 @@ def start_wake_word():
                 threshold=0.5
             )
         
-        is_listening = True
         thread = threading.Thread(target=wake_detector.start_listening, daemon=True)
         thread.start()
         
@@ -91,7 +93,8 @@ def stop_wake_word():
     try:
         if wake_detector:
             wake_detector.stop_listening()
-        is_listening = False
+        with listening_lock:
+            is_listening = False
         return jsonify({"status": "stopped"})
     except Exception as e: 
         return jsonify({"status": "error", "message":  str(e)}), 500
@@ -107,48 +110,16 @@ def poll_wake_word():
 @sock.route('/ws/live')
 def live_audio_socket(ws):
     """
-    WebSocket endpoint for bidirectional audio streaming with Gemini Live.
+    ws: WebSocket endpoint for bidirectional audio streaming with Gemini Live.
     Client sends PCM audio -> Python -> Gemini
     Gemini sends Audio/Text -> Python -> Client
     """
-    global current_session
     
     print("🔌 Client connected to Live Socket")
     
     try:
         # Initialize Session
         current_session = GeminiLiveSession()
-        stop_event = asyncio.Event()
-        
-        # Async helper to run the loop
-        async def run_session():
-            await current_session.connect(system_instruction=build_system_prompt())
-            
-            # Setup callbacks
-            def on_audio(pcm_data):
-                # Send back to client
-                try:
-                    # Convert to base64 for safe transport over WS (or send bytes if client supports)
-                    # For simplicity, text frame with base64
-                    ws.send(json.dumps({
-                        "type": "audio",
-                        "data": base64.b64encode(pcm_data).decode("utf-8")
-                    }))
-                except Exception as e:
-                    print(f"WS Send Error: {e}")
-
-            def on_text(text):
-                ws.send(json.dumps({
-                    "type": "text",
-                    "data": text
-                }))
-
-            # Start receive loop (non-blocking in async context)
-            # But we are in a synchronous Flask route wrapper?
-            # flask-sock runs in a thread. We need a way to run async code here.
-            # We can use asyncio.run or create a loop.
-            
-            await current_session.receive_loop(on_audio, on_text)
 
         # Run async loop in this thread
         # WebSocket loop for converting Client input -> Session.send_audio
@@ -173,16 +144,29 @@ def live_audio_socket(ws):
                 if not message:
                     break
                 
-                data = json.loads(message)
+                try:
+                    data = json.loads(message)
+                except json.JSONDecodeError:
+                    print("Error: Invalid JSON from client")
+                    continue
+
                 if data.get("type") == "audio" and current_session.running:
-                    # Audio chunk from client (base64)
-                    pcm = base64.b64decode(data["data"])
-                    # Send to Gemini
-                    loop.run_until_complete(current_session.send_audio_chunk(pcm))
+                    try:
+                        # Audio chunk from client (base64)
+                        pcm = base64.b64decode(data["data"])
+                        # Send to Gemini
+                        loop.run_until_complete(current_session.send_audio_chunk(pcm))
+                    except Exception as e:
+                        print(f"Error processing audio chunk: {e}")
                     
         except simple_websocket.ConnectionClosed:
             pass
         finally:
+            receive_task.cancel()
+            try:
+                loop.run_until_complete(receive_task)
+            except asyncio.CancelledError:
+                pass
             loop.run_until_complete(current_session.close())
             loop.close()
             

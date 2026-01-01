@@ -41,7 +41,7 @@ def build_tools_description() -> str:
     lines = []
     for name, info in TOOLS.items():
         params = ", ".join(f"{k}: {v}" for k, v in info["parameters"].items()) or "none"
-        lines.append(f"- {name}: {info['description']}")
+        lines.append(f"- {name}({params}): {info['description']}")
     return "\n".join(lines)
 
 def build_system_prompt() -> str:

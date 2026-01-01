@@ -30,7 +30,7 @@ def validate_python_code(code: str) -> Optional[str]:
     except Exception as e:
         return f"Error: {e}"
 
-def write_extension(filename: str, code: str) -> str:
+def write_extension(filename: str, code: str, overwrite: bool = False) -> str:
     """
     Write a new Python extension to tools/extensions/
     
@@ -42,16 +42,21 @@ def write_extension(filename: str, code: str) -> str:
         filename += ".py"
         
     # Security: Prevent writing outside extensions dir
-    if ".." in filename or "/" in filename or "\\" in filename:
-        return "Error: Invalid filename. Cannot contain paths."
+    try:
+        file_path = (EXTENSIONS_DIR / filename).resolve()
+        if not str(file_path).startswith(str(EXTENSIONS_DIR.resolve())):
+            return "Error: Invalid filename. Path traversal detected."
+    except Exception as e:
+        return f"Error: Path validation failed: {e}"
+
+    if file_path.exists() and not overwrite:
+        return f"Error: Extension '{filename}' already exists. Use overwrite=True if you intend to replace it."
         
     # Syntax check
     error = validate_python_code(code)
     if error:
         return f"Cannot save: {error}"
         
-    file_path = EXTENSIONS_DIR / filename
-    
     try:
         with open(file_path, "w") as f:
             f.write(code)
@@ -61,7 +66,8 @@ def write_extension(filename: str, code: str) -> str:
 
 def run_python_script(code: str, timeout: int = 10) -> str:
     """
-    Execute a Python script in a sandbox (subprocess) and return output.
+    Execute a Python script in a separate subprocess and return output.
+    WARNING: This execution is NOT sandboxed and has the same permissions as the main process.
     Use this to test code before saving it as an extension.
     """
     # Syntax check
@@ -97,7 +103,7 @@ def run_python_script(code: str, timeout: int = 10) -> str:
         # Cleanup
         try:
             os.unlink(temp_path)
-        except:
+        except OSError:
             pass
 
 def list_extensions() -> str:

@@ -11,10 +11,12 @@ from google import genai
 from google.genai import types
 
 # --- 1. CLEAN START ---
-# Force kill any hidden jarvis processes that might be holding a session open
+# Force kill any other hidden jarvis processes that might be holding a session open
+# We exclude the current process ID to avoid self-termination
 try:
-    subprocess.run(["pkill", "-9", "-f", "jarvis_live_cli.py"], capture_output=True)
-except:
+    current_pid = os.getpid()
+    subprocess.run(f"pgrep -f jarvis_live_cli.py | grep -v {current_pid} | xargs kill -9", shell=True, capture_output=True)
+except Exception:
     pass
 
 load_dotenv()
@@ -57,7 +59,8 @@ class UltraAudio:
             try:
                 data = await self.playback_queue.get()
                 await loop.run_in_executor(None, self.out_stream.write, data)
-            except:
+            except Exception as e:
+                print(f"Playback error: {e}")
                 continue
 
     def get_rms(self, data):
@@ -89,7 +92,7 @@ async def start_session():
     config = types.LiveConnectConfig(
         response_modalities=["AUDIO"],
         input_audio_transcription=types.AudioTranscriptionConfig(),
-        # Grounding Tools enabled for real-world utility
+        # NOTE: Google Search sends data to Google servers (Privacy Consideration)
         tools=[types.Tool(google_search=types.GoogleSearch())],
         context_window_compression=types.ContextWindowCompressionConfig(sliding_window=types.SlidingWindow()),
         session_resumption=types.SessionResumptionConfig(handle=STATE["handle"]),
@@ -162,13 +165,14 @@ async def start_session():
             await asyncio.gather(send_loop(), receive_loop())
 
     except Exception as e:
+        # Structured error detection (check for 409 Conflict specifically)
         err_msg = str(e)
         if "409" in err_msg or "403" in err_msg:
-            print(f"🛑 [ENGINE] Conflict/Limit on Key {STATE['key_idx']+1}. Pivoting...")
+            print(f"🛑 [ENGINE] Conflict/Limit (Status Code Detected). Pivoting...")
             STATE["key_idx"] = (STATE["key_idx"] + 1) % len(KEYS)
             return True # Retry signal
         else:
-            print(f"❌ [ENGINE] Core Error: {e}")
+            print(f"❌ [ENGINE] Session failed: {err_msg}")
             return False
     finally:
         worker_task.cancel()
