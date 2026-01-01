@@ -229,7 +229,36 @@ def stop_speaking() -> str:
 
 
 # ============== TOOL REGISTRY ==============
+# NOTE: This is kept for backwards compatibility
+# New code should use tools.tool_registry.TOOLS
 
+try:
+    from tools.tool_registry import TOOLS
+except ImportError:
+    # Fallback if tools module not available
+    TOOLS = {
+    "search_web": {"function": search_web, "description": "Search for any information online", "parameters": {"query": "what to search"}},
+    "search_news": {"function": search_news, "description": "Get latest news on a topic", "parameters": {"query": "news topic"}},
+    "open_app": {"function": open_app, "description": "Open an application", "parameters": {"app_name": "app name"}},
+    "get_time": {"function": get_time, "description": "Get current time", "parameters": {}},
+    "set_timer": {"function": set_timer, "description": "Set a timer", "parameters": {"minutes": "number", "label": "name (optional)"}},
+    "control_music": {"function": control_music, "description": "Control music playback", "parameters": {"action": "play/pause/next/previous"}},
+    "set_volume": {"function": set_volume, "description": "Set volume", "parameters": {"level": "0-100", "action": "up/down/mute"}},
+    "get_battery": {"function": get_battery, "description": "Get battery status", "parameters": {}},
+    "take_screenshot": {"function": take_screenshot, "description": "Take screenshot", "parameters": {}},
+    "get_weather": {"function": get_weather, "description": "Get weather", "parameters": {"city": "city name"}},
+    "add_reminder": {"function": add_reminder, "description": "Add reminder", "parameters": {"text": "what to remember"}},
+    "get_reminders": {"function": get_reminders, "description": "List reminders", "parameters": {}},
+    "clear_reminders": {"function": clear_reminders, "description": "Clear reminders", "parameters": {}},
+    "calculate": {"function": calculate, "description": "Do math", "parameters": {"expression": "math expression"}},
+    "pause_listening": {"function": pause_listening, "description": "Pause listening (only when user explicitly says pause/stop/wait)", "parameters": {}},
+    "stop_speaking": {"function": stop_speaking, "description": "Stop current speech (user says stop/quiet/shut up)", "parameters": {}},
+    "exit_jarvis": {"function": exit_jarvis, "description": "Exit Jarvis (goodbye/bye/quit)", "parameters": {}},
+    }
+
+
+# Backwards compatibility - re-export if TOOLS was imported from tool_registry
+if 'TOOLS' not in locals() or not isinstance(TOOLS, dict):
 TOOLS = {
     "search_web": {"function": search_web, "description": "Search for any information online", "parameters": {"query": "what to search"}},
     "search_news": {"function": search_news, "description": "Get latest news on a topic", "parameters": {"query": "news topic"}},

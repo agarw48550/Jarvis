@@ -119,3 +119,35 @@ class AudioCapture:
             self._stream.close()
         if self._audio:
             self._audio.terminate()
+
+
+class AudioPlayer:
+    """Real-time audio player for PCM streaming"""
+    
+    def __init__(self, sample_rate=24000):
+        self.sample_rate = sample_rate
+        self._audio = None
+        self._stream = None
+        self.is_playing = False
+        
+    def start(self):
+        self._audio = pyaudio.PyAudio()
+        self._stream = self._audio.open(
+            format=pyaudio.paInt16,
+            channels=1,
+            rate=self.sample_rate,
+            output=True
+        )
+        self.is_playing = True
+        
+    def play_chunk(self, data: bytes):
+        if self._stream and self.is_playing:
+            self._stream.write(data)
+            
+    def stop(self):
+        self.is_playing = False
+        if self._stream:
+            self._stream.stop_stream()
+            self._stream.close()
+        if self._audio:
+            self._audio.terminate()

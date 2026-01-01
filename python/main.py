@@ -15,12 +15,17 @@ from pathlib import Path
 
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
+from flask_sock import Sock 
+import asyncio
+import simple_websocket
+from core.gemini_live import GeminiLiveSession
 
 # Add current directory to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 app = Flask(__name__)
 CORS(app)
+sock = Sock(app)
 
 # ============== Global State ==============
 wake_detector = None
@@ -41,9 +46,8 @@ def health():
         "status": "ok",
         "listening": is_listening,
         "services": {
-            "wake_word":  "ready",
-            "stt": "ready",
-            "tts": "ready"
+            "gemini_live": "active",
+            "search_grounding": "native"
         }
     })
 
@@ -100,81 +104,95 @@ def poll_wake_word():
     except queue.Empty:
         return jsonify({"detected": False})
 
-# ============== Speech-to-Text (Whisper) ==============
-@app.route('/stt/transcribe', methods=['POST'])
-def transcribe():
-    try: 
-        from stt.whisper_service import transcribe_audio
-        
-        data = request.get_json()
-        
-        # Handle base64 audio data
-        if 'audio_base64' in data: 
-            audio_bytes = base64.b64decode(data['audio_base64'])
-            temp_file = TEMP_DIR / 'input_audio.wav'
-            with open(temp_file, 'wb') as f:
-                f.write(audio_bytes)
-            text = transcribe_audio(str(temp_file))
-        elif 'audio_path' in data: 
-            text = transcribe_audio(data['audio_path'])
-        else:
-            return jsonify({"error":  "No audio provided", "success": False}), 400
-        
-        print(f"📝 Transcribed:  {text}")
-        return jsonify({"text": text, "success": True})
-        
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({"error":  str(e), "success": False}), 500
-
-# ============== Text-to-Speech (Piper) ==============
-@app.route('/tts/speak', methods=['POST'])
-def speak():
-    global current_voice
+@sock.route('/ws/live')
+def live_audio_socket(ws):
+    """
+    WebSocket endpoint for bidirectional audio streaming with Gemini Live.
+    Client sends PCM audio -> Python -> Gemini
+    Gemini sends Audio/Text -> Python -> Client
+    """
+    global current_session
     
-    try: 
-        from tts.piper_service import text_to_speech, play_audio
+    print("🔌 Client connected to Live Socket")
+    
+    try:
+        # Initialize Session
+        current_session = GeminiLiveSession()
+        stop_event = asyncio.Event()
         
-        data = request.get_json()
-        text = data.get('text', '')
-        voice = data.get('voice', current_voice)
-        play_immediately = data.get('play', True)
+        # Async helper to run the loop
+        async def run_session():
+            await current_session.connect(system_instruction=build_system_prompt())
+            
+            # Setup callbacks
+            def on_audio(pcm_data):
+                # Send back to client
+                try:
+                    # Convert to base64 for safe transport over WS (or send bytes if client supports)
+                    # For simplicity, text frame with base64
+                    ws.send(json.dumps({
+                        "type": "audio",
+                        "data": base64.b64encode(pcm_data).decode("utf-8")
+                    }))
+                except Exception as e:
+                    print(f"WS Send Error: {e}")
+
+            def on_text(text):
+                ws.send(json.dumps({
+                    "type": "text",
+                    "data": text
+                }))
+
+            # Start receive loop (non-blocking in async context)
+            # But we are in a synchronous Flask route wrapper?
+            # flask-sock runs in a thread. We need a way to run async code here.
+            # We can use asyncio.run or create a loop.
+            
+            await current_session.receive_loop(on_audio, on_text)
+
+        # Run async loop in this thread
+        # WebSocket loop for converting Client input -> Session.send_audio
         
-        if not text: 
-            return jsonify({"error": "No text provided", "success": False}), 400
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         
-        print(f"🔊 Speaking: {text[: 50]}...")
+        # Start connection
+        loop.run_until_complete(current_session.connect(system_instruction=build_system_prompt()))
         
-        audio_path = text_to_speech(text, voice)
+        # We need to run receive_loop concurrently with reading client input
+        # So we create a task
+        receive_task = loop.create_task(current_session.receive_loop(
+            lambda raw: ws.send(json.dumps({"type": "audio", "data": base64.b64encode(raw).decode('utf-8')})),
+            lambda txt: ws.send(json.dumps({"type": "text", "data": txt}))
+        ))
         
-        if play_immediately:
-            play_audio(audio_path)
-        
-        return jsonify({
-            "audio_path": audio_path,
-            "success": True
-        })
-        
+        try:
+            while True:
+                # Read from Client
+                message = ws.receive()
+                if not message:
+                    break
+                
+                data = json.loads(message)
+                if data.get("type") == "audio" and current_session.running:
+                    # Audio chunk from client (base64)
+                    pcm = base64.b64decode(data["data"])
+                    # Send to Gemini
+                    loop.run_until_complete(current_session.send_audio_chunk(pcm))
+                    
+        except simple_websocket.ConnectionClosed:
+            pass
+        finally:
+            loop.run_until_complete(current_session.close())
+            loop.close()
+            
     except Exception as e:
+        print(f"Live Session Error: {e}")
         import traceback
         traceback.print_exc()
-        return jsonify({"error": str(e), "success": False}), 500
 
-@app.route('/tts/voices', methods=['GET'])
-def get_voices():
-    voices = [
-        {"id": "male", "name": "Ryan (Male)", "description": "Clear American male voice"},
-        {"id": "female", "name": "Amy (Female)", "description": "Friendly American female voice"}
-    ]
-    return jsonify({"voices": voices})
+# Legacy STT and TTS endpoints removed in favor of Native Audio Dialog
 
-@app.route('/tts/set-voice', methods=['POST'])
-def set_voice():
-    global current_voice
-    data = request.get_json()
-    current_voice = data.get('voice', 'male')
-    return jsonify({"voice": current_voice, "success": True})
 
 # ============== Audio Recording ==============
 @app.route('/audio/record', methods=['POST'])
@@ -210,6 +228,23 @@ def record_audio():
         return jsonify({"error":  str(e), "success": False}), 500
 
 # ============== Main ==============
+# Add core imports
+from core.orchestrator import JarvisOrchestrator
+from core.llm_router import chat
+from core.memory import add_message, add_fact, get_all_facts
+from core.tool_executor import extract_and_execute_tools
+from core.gemini_live import build_system_prompt
+from tools.tool_registry import TOOLS
+
+orchestrator = JarvisOrchestrator()
+
+# Legacy Text Chat endpoint removed
+
+
+@app.route('/memory/facts', methods=['GET'])
+def get_facts():
+    return jsonify({"facts": get_all_facts()})
+
 if __name__ == '__main__':
     print("=" * 50)
     print("🤖 JARVIS Python Backend Starting...")
@@ -220,15 +255,11 @@ if __name__ == '__main__':
     print()
     print("Available endpoints:")
     print("  GET  /health          - Check server status")
-    print("  POST /wake-word/start - Start wake word detection")
-    print("  POST /wake-word/stop  - Stop wake word detection")
-    print("  GET  /wake-word/poll  - Poll for detections")
-    print("  POST /stt/transcribe  - Transcribe audio to text")
-    print("  POST /tts/speak       - Convert text to speech")
-    print("  GET  /tts/voices      - List available voices")
-    print("  POST /audio/record    - Record audio")
+    print("  WS   /ws/live         - Native Audio WebSocket")
+    print("  GET  /memory/facts    - Get remembered facts")
+
     print()
-    print("🚀 Server starting on http://127.0.0.1:5000")
+    print("🚀 Server starting on http://127.0.0.1:5001")
     print("=" * 50)
     
-    app.run(host='127.0.0.1', port=5000, debug=False, threaded=True)
+    app.run(host='127.0.0.1', port=5001, debug=False, threaded=True)
