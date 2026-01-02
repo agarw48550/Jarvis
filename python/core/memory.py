@@ -417,6 +417,19 @@ def set_preference(key: str, value: str):
     conn.close()
 
 
+def get_preference(key: str) -> Optional[str]:
+    """Get a single user preference by key"""
+    init_database()
+    
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT value FROM preferences WHERE key = ?", (key,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    return row[0] if row else None
+
+
 def get_preferences_for_prompt() -> str:
     """Get preferences formatted for system prompt"""
     prefs = get_preferences()

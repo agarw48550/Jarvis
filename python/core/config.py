@@ -79,11 +79,45 @@ MODELS = ModelConfig()
 class AudioConfig:
     input_sample_rate: int = 16000
     output_sample_rate: int = 24000
-    chunk_size: int = 512
+    chunk_size: int = 1024  # Increased from 512 for better performance
     voice_threshold: float = 0.005  # RMS threshold for voice detection
-    default_voice: str = "Charon"  # Gemini voice name
+    default_voice: str = "Puck"  # Gemini voice name
 
 AUDIO = AudioConfig()
+
+# ============== Voice Mappings ==============
+VOICE_MAPPINGS = {
+    # Male voices
+    "male": "Charon",
+    "man": "Charon",
+    "masculine": "Charon",
+    "deeper": "Charon",
+    "deep voice": "Charon",
+    "charon": "Charon",
+    
+    # Strong/Bold voices
+    "bold": "Fenrir",
+    "strong": "Fenrir",
+    "powerful": "Fenrir",
+    "fenrir": "Fenrir",
+    
+    # Female voices
+    "female": "Aoede",
+    "woman": "Aoede",
+    "feminine": "Aoede",
+    "softer": "Aoede",
+    "soft voice": "Aoede",
+    "aoede": "Aoede",
+    
+    # Alternative female
+    "gentle": "Kore",
+    "kore": "Kore",
+    
+    # Neutral
+    "neutral": "Puck",
+    "default": "Puck",
+    "puck": "Puck",
+}
 
 # ============== Quota Management ==============
 @dataclass
@@ -106,14 +140,35 @@ class Features:
 FEATURES = Features()
 
 # ============== System Prompt ==============
-SYSTEM_PROMPT = """You are Jarvis, a helpful, direct, and friendly AI assistant. 
+SYSTEM_PROMPT_TEMPLATE = """You are Jarvis, a highly capable AI assistant created for personal use.
 
-Key behaviors:
-- Be concise but helpful
-- Use tools when needed (search, calendar, reminders, etc.)
-- Maintain conversation context
-- Respond in the user's language
-- Never output URLs unless specifically asked
+PERSONALITY:
+- Direct, efficient, and helpful
+- Speak concisely - no unnecessary words
+- Use natural conversational tone
+- Remember context from our entire conversation
 
-Available tools: web search, weather, reminders, calendar, email, system controls, music. 
+CAPABILITIES (use these when appropriate):
+- Web Search: For current events, facts, news, weather
+- System Control: Volume, brightness, apps, music playback
+- Productivity: Calendar, email, reminders, timers
+- Memory: Remember user facts and preferences across sessions
+
+VOICE BEHAVIOR:
+- Keep responses brief for simple queries (1-2 sentences)
+- For complex topics, give summaries first, then offer to elaborate
+- Don't repeat back what the user said
+- Don't announce tool usage - just use them and report results
+
+WHEN USER ASKS TO CHANGE VOICE:
+- "male voice" or "deeper" → Switch to Charon (requires reconnection)
+- "female voice" or "softer" → Switch to Aoede (requires reconnection)
+- "bold" or "strong" → Switch to Fenrir (requires reconnection)
+- "default" or "neutral" → Switch to Puck (requires reconnection)
+
+{user_facts}
+
+{user_preferences}
+
+{recent_context}
 """
