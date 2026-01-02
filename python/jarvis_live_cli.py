@@ -6,6 +6,7 @@ import time
 import numpy as np
 import signal
 import atexit
+import uuid
 from google import genai
 from google.genai import types
 from core.config import API_KEYS, MODELS, AUDIO, SYSTEM_PROMPT
@@ -28,6 +29,10 @@ STATE = {
     "is_ai_active": False,
     "key_cooldowns": {}
 }
+
+# Conversation memory
+CONVERSATION_HISTORY = []
+MAX_HISTORY = 10  # Keep last 10 exchanges
 
 _cleanup_done = False
 
@@ -97,8 +102,23 @@ class UltraAudio:
             pass
         self.pya.terminate()
 
+# --- CONVERSATION MEMORY ---
+def get_system_prompt_with_context():
+    """Build system prompt with conversation history"""
+    base_prompt = SYSTEM_PROMPT
+    
+    if CONVERSATION_HISTORY:
+        history_text = "\n\nRecent conversation context:\n"
+        for msg in CONVERSATION_HISTORY[-6:]:  # Last 3 exchanges
+            role = "User" if msg["role"] == "user" else "Jarvis"
+            history_text += f"{role}: {msg['text']}\n"
+        return base_prompt + history_text
+    
+    return base_prompt
+
 # --- SESSION LOGIC ---
 async def start_session():
+    session_id = str(uuid.uuid4())[:8]
     audio = UltraAudio()
     worker_task = None
     send_task = None
@@ -117,53 +137,73 @@ async def start_session():
         break
     
     key = KEYS[STATE["key_idx"]]
-    print(f"\n📡 [ENGINE] Connecting to {MODEL} using Key {STATE['key_idx'] + 1}...")
+    print(f"\n📡 [ENGINE] Session {session_id}: Connecting to {MODEL} using Key {STATE['key_idx'] + 1}...")
     
     client = genai.Client(
         api_key=key,
         http_options={'api_version': MODELS.gemini_live_api_version}
     )
     
-    # NO session resumption - fresh session each time
+    # NO session resumption - fresh session each time with context from memory
     config = types.LiveConnectConfig(
         response_modalities=["AUDIO"],
         input_audio_transcription=types.AudioTranscriptionConfig(),
         output_audio_transcription=types.AudioTranscriptionConfig(),
         tools=[types.Tool(google_search=types.GoogleSearch())],
-        system_instruction=SYSTEM_PROMPT
+        system_instruction=get_system_prompt_with_context()
     )
 
     try:
         async with client.aio.live.connect(model=MODEL, config=config) as session:
-            print("✅ [ENGINE] Session Linked.")
+            print(f"✅ [ENGINE] Session {session_id}: Linked.")
             print("🎧 [ENGINE] Listening...")
             STATE["is_ai_active"] = False
             
             worker_task = asyncio.create_task(audio.playback_worker())
             
             async def send_loop():
-                """Clocks mic input and handles heartbeats"""
+                """Streams mic audio to Gemini, pausing during AI speech"""
                 chunk_duration = CHUNK_SIZE / SEND_RATE
+                chunks_sent = 0
+                last_log = time.time()
+                
                 while STATE["active"]:
                     t_start = time.perf_counter()
                     
-                    # ALWAYS read mic to prevent buffer overflow
+                    # Always read mic to prevent buffer overflow
                     data = await asyncio.get_event_loop().run_in_executor(None, audio.read_mic)
                     
-                    # Only send to Gemini when AI is not speaking
+                    # Only send audio when AI is NOT speaking (prevents false interruptions)
                     if not STATE["is_ai_active"]:
-                        rms = audio.get_rms(data)
-                        if rms > THRESHOLD:
-                            # User is speaking - send real audio
+                        try:
                             await session.send_realtime_input(
                                 audio=types.Blob(data=data, mime_type="audio/pcm;rate=16000")
                             )
+                            chunks_sent += 1
+                        except Exception as e:
+                            if STATE["active"]:
+                                print(f"⚠️ [ENGINE] Send error: {e}")
+                            break
                     else:
-                        # AI is speaking - check for interruption
+                        # AI is speaking - only send if user is LOUDLY interrupting
                         rms = audio.get_rms(data)
-                        if rms > THRESHOLD * 2:
+                        if rms > THRESHOLD * 3:  # Much higher threshold for intentional interruption
                             print("🎤 [ENGINE] User interrupting...")
-
+                            try:
+                                await session.send_realtime_input(
+                                    audio=types.Blob(data=data, mime_type="audio/pcm;rate=16000")
+                                )
+                            except:
+                                pass
+                    
+                    # Debug logging every 5 seconds
+                    if time.time() - last_log > 5:
+                        rms = audio.get_rms(data)
+                        status = "🔇 Paused (AI speaking)" if STATE["is_ai_active"] else "🎙️ Streaming"
+                        print(f"📊 [DEBUG] {status} | Sent: {chunks_sent} | RMS: {rms:.4f}")
+                        chunks_sent = 0
+                        last_log = time.time()
+                    
                     elapsed = time.perf_counter() - t_start
                     await asyncio.sleep(max(0, chunk_duration - elapsed))
 
@@ -187,8 +227,8 @@ async def start_session():
                                         print(f"🤖 Jarvis: {part.text}")
 
                             if content.turn_complete:
-                                await asyncio.sleep(0.2)
                                 STATE["is_ai_active"] = False
+                                await asyncio.sleep(0.5)  # Wait 500ms before accepting new input
                                 print("🎧 [ENGINE] Listening...")
 
                             if content.interrupted:
@@ -200,15 +240,26 @@ async def start_session():
                                     except:
                                         break
                                 print("🚨 [ENGINE] Interrupted - Listening...")
+                                # DON'T break or end session - just continue listening!
 
-                            # Transcriptions
+                            # Transcriptions - save to history
                             if hasattr(content, 'input_transcription') and content.input_transcription:
                                 if content.input_transcription.text:
-                                    print(f"👤 You: {content.input_transcription.text}")
-                                    
+                                    text = content.input_transcription.text.strip()
+                                    if text:
+                                        CONVERSATION_HISTORY.append({"role": "user", "text": text})
+                                        print(f"👤 You: {text}")
+                                        
                             if hasattr(content, 'output_transcription') and content.output_transcription:
                                 if content.output_transcription.text:
-                                    print(f"🤖 Jarvis: {content.output_transcription.text}")
+                                    text = content.output_transcription.text.strip()
+                                    if text:
+                                        CONVERSATION_HISTORY.append({"role": "assistant", "text": text})
+                                        # Don't print here - already printed from inline_data
+                            
+                            # Trim history to last N exchanges
+                            if len(CONVERSATION_HISTORY) > MAX_HISTORY * 2:
+                                CONVERSATION_HISTORY[:] = CONVERSATION_HISTORY[-MAX_HISTORY * 2:]
 
                         # Tool calls
                         if response.tool_call:
