@@ -122,7 +122,7 @@ VOICE_MAPPINGS = {
 # ============== Quota Management ==============
 @dataclass
 class QuotaConfig:
-    gemini_daily_limit: int = 40  # 2 accounts × 20 requests
+    gemini_daily_limit: int = 40  # 2 accounts x 20 requests
     groq_rpm_limit: int = 30  # Requests per minute
     cerebras_rpm_limit: int = 30
 

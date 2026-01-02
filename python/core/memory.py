@@ -5,11 +5,14 @@ Supports vector embeddings for RAG (when sqlite-vec is available)
 """
 
 import sqlite3
-import json
-from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict
-import sys
+
+# Try to import numpy for embedding operations
+try:
+    import numpy as np
+except ImportError:
+    np = None
 
 # Database path
 DB_DIR = Path(__file__).parent.parent / "data"
@@ -157,8 +160,9 @@ def text_to_embedding(text: str) -> Optional[bytes]:
 
 def cosine_similarity(emb1: bytes, emb2: bytes) -> float:
     """Calculate cosine similarity between two embeddings"""
+    if np is None:
+        return 0.0
     try:
-        import numpy as np
         vec1 = np.frombuffer(emb1, dtype=np.float32)
         vec2 = np.frombuffer(emb2, dtype=np.float32)
         dot = np.dot(vec1, vec2)
@@ -167,7 +171,7 @@ def cosine_similarity(emb1: bytes, emb2: bytes) -> float:
         if norm1 == 0 or norm2 == 0:
             return 0.0
         return dot / (norm1 * norm2)
-    except:
+    except Exception:
         return 0.0
 
 
@@ -379,6 +383,7 @@ def clear_memory():
     cursor.execute("DELETE FROM messages")
     cursor.execute("DELETE FROM conversations")
     cursor.execute("DELETE FROM facts")
+    cursor.execute("DELETE FROM context_cache")
     conn.commit()
     conn.close()
     print("🗑️ Memory cleared")
@@ -456,8 +461,15 @@ def get_preferences_for_prompt() -> str:
 # Backwards compatibility with old JSON-based memory
 def load_memory() -> dict:
     """Backwards compatibility - returns dict format"""
+    init_database()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM conversations")
+    conv_count = cursor.fetchone()[0]
+    conn.close()
+    
     facts = get_all_facts()
-    return {"facts": facts, "conversation_count": len(get_all_facts())}
+    return {"facts": facts, "conversation_count": conv_count}
 
 
 def save_memory(memory: dict):
@@ -470,8 +482,4 @@ def save_memory(memory: dict):
                 add_fact(fact_data)
 
 
-# Initialize database on import
-try:
-    init_database()
-except Exception as e:
-    print(f"⚠️ Database initialization error: {e}")
+

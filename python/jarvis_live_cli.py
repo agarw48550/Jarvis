@@ -1,5 +1,4 @@
 import asyncio
-import os
 import sys
 import pyaudio
 import time
@@ -21,8 +20,8 @@ from core.memory import (
 # Initialize database
 try:
     init_database()
-except:
-    pass
+except Exception as e:
+    print(f"⚠️ Database initialization failed: {e}")
 
 # --- GLOBAL STATE ---
 KEYS = API_KEYS.gemini_keys
@@ -41,15 +40,40 @@ STATE = {
     "active": True,
     "is_ai_active": False,
     "key_cooldowns": {},
-    "voice_change_requested": False,
-    "new_voice": None
+    "session_handle": None,  # For session resumption
+    "voice": None,  # Current voice setting
+    "needs_voice_change": False,  # Signal to reconnect with new voice
+    "cooldown_until": 0,  # Timestamp when we can resume sending audio
 }
 
-# Conversation memory
-CONVERSATION_HISTORY = []
-MAX_HISTORY = 10  # Keep last 10 exchanges
-
 _cleanup_done = False
+
+# --- TOOL DEFINITIONS ---
+JARVIS_TOOLS = [
+    types.FunctionDeclaration(
+        name="exit_jarvis",
+        description="Exit and close Jarvis when user says goodbye, exit, quit, or stop",
+        parameters=types.Schema(
+            type=types.Type.OBJECT,
+            properties={}
+        )
+    ),
+    types.FunctionDeclaration(
+        name="change_voice",
+        description="Change Jarvis voice. Options: Puck (default/neutral), Charon (deep male), Fenrir (bold male), Aoede (melodic female), Kore (warm female)",
+        parameters=types.Schema(
+            type=types.Type.OBJECT,
+            properties={
+                "voice_name": types.Schema(
+                    type=types.Type.STRING,
+                    description="The voice to use",
+                    enum=["Puck", "Charon", "Fenrir", "Aoede", "Kore"]
+                )
+            },
+            required=["voice_name"]
+        )
+    ),
+]
 
 # --- CLEANUP HANDLERS ---
 def cleanup():
@@ -103,7 +127,7 @@ class UltraAudio:
                     if consecutive_errors >= 5:
                         print("Too many consecutive errors, stopping playback")
                         break
-                    await asyncio.sleep(0.1)  # Brief backoff
+                    await asyncio.sleep(0.1)
                 continue
 
     def get_rms(self, data):
@@ -127,34 +151,47 @@ class UltraAudio:
 # --- VOICE MANAGEMENT ---
 def get_current_voice():
     """Get the current voice preference"""
-    return get_preference("voice") or AUDIO.default_voice
+    return STATE.get("voice") or get_preference("voice") or AUDIO.default_voice
 
-def parse_voice_request(text):
-    """Parse natural language voice change request"""
-    text_lower = text.lower()
-    for keyword, voice_name in VOICE_MAPPINGS.items():
-        if keyword in text_lower:
-            return voice_name
-    return None
+# --- TOOL EXECUTION ---
+def execute_tool(name: str, args: dict) -> str:
+    """Execute a tool and return result string"""
+    
+    if name == "exit_jarvis":
+        STATE["active"] = False
+        return "Goodbye! Jarvis is shutting down."
+    
+    elif name == "change_voice":
+        new_voice = args.get("voice_name", "Puck")
+        STATE["voice"] = new_voice
+        
+        # Save to persistent memory
+        set_preference("voice", new_voice)
+        
+        # Signal reconnection needed
+        STATE["needs_voice_change"] = True
+        
+        return f"Switching to {new_voice} voice. One moment..."
+    
+    return f"Unknown tool: {name}"
 
 # --- CONVERSATION MEMORY ---
 def build_system_prompt():
-    """Build system prompt with user facts, preferences, and conversation history"""
+    """Build system prompt with user facts and preferences"""
     user_facts = get_facts_for_prompt()
     user_preferences = get_preferences_for_prompt()
     
-    # Build recent context from conversation history
-    recent_context = ""
-    if CONVERSATION_HISTORY:
-        recent_context = "\n\nRecent conversation:\n"
-        for msg in CONVERSATION_HISTORY[-10:]:  # Last 10 messages (5 user-assistant pairs)
-            role = "User" if msg["role"] == "user" else "Jarvis"
-            recent_context += f"{role}: {msg['text']}\n"
+    # Build context
+    context_parts = []
+    if user_facts:
+        context_parts.append(user_facts)
+    if user_preferences:
+        context_parts.append(user_preferences)
     
     return SYSTEM_PROMPT_TEMPLATE.format(
         user_facts=user_facts if user_facts else "",
         user_preferences=user_preferences if user_preferences else "",
-        recent_context=recent_context if recent_context else ""
+        recent_context=""  # Session resumption handles this
     )
 
 # --- SESSION LOGIC ---
@@ -182,11 +219,16 @@ async def start_session():
     if all_on_cooldown:
         print("⚠️ All keys on cooldown. Waiting 10 seconds...")
         await asyncio.sleep(10)
-        STATE["key_cooldowns"].clear()  # Reset cooldowns
+        STATE["key_cooldowns"].clear()
     
     key = KEYS[STATE["key_idx"]]
     current_voice = get_current_voice()
-    print(f"\n📡 [ENGINE] Session {session_id}: Connecting with voice '{current_voice}'...")
+    
+    # Show connection info
+    if STATE.get("session_handle"):
+        print(f"\n📡 [ENGINE] Session {session_id}: Resuming with voice '{current_voice}'...")
+    else:
+        print(f"\n📡 [ENGINE] Session {session_id}: New session with voice '{current_voice}'...")
     
     client = genai.Client(
         api_key=key,
@@ -202,13 +244,31 @@ async def start_session():
         )
     )
     
-    # Build config with memory-enhanced system prompt
+    # Build config with session resumption and context compression
     config = types.LiveConnectConfig(
         response_modalities=["AUDIO"],
         speech_config=speech_config,
         input_audio_transcription=types.AudioTranscriptionConfig(),
         output_audio_transcription=types.AudioTranscriptionConfig(),
-        tools=[types.Tool(google_search=types.GoogleSearch())],
+        
+        # Session resumption - maintains context across reconnects
+        session_resumption=types.SessionResumptionConfig(
+            handle=STATE.get("session_handle")
+        ),
+        
+        # Context window compression - allows infinite conversations
+        context_window_compression=types.ContextWindowCompressionConfig(
+            sliding_window=types.SlidingWindow(
+                target_tokens=16000  # Keep ~16k tokens of context
+            )
+        ),
+        
+        # Tools
+        tools=[
+            types.Tool(google_search=types.GoogleSearch()),  # Built-in search
+            types.Tool(function_declarations=JARVIS_TOOLS),  # Custom functions
+        ],
+        
         system_instruction=build_system_prompt()
     )
 
@@ -221,7 +281,7 @@ async def start_session():
             worker_task = asyncio.create_task(audio.playback_worker())
             
             async def send_loop():
-                """Streams mic audio to Gemini, pausing during AI speech"""
+                """Streams audio to Gemini with echo prevention"""
                 chunk_duration = CHUNK_SIZE / SEND_RATE
                 chunks_sent = 0
                 last_log = time.time()
@@ -229,11 +289,18 @@ async def start_session():
                 while STATE["active"]:
                     t_start = time.perf_counter()
                     
-                    # Always read mic to prevent buffer overflow
+                    # Always read mic to clear buffer (prevents overflow)
                     data = await asyncio.get_event_loop().run_in_executor(None, audio.read_mic)
                     
-                    # Only send audio when AI is NOT speaking (prevents false interruptions)
-                    if not STATE["is_ai_active"]:
+                    current_time = time.time()
+                    
+                    # Check if we should send audio
+                    should_send = (
+                        not STATE["is_ai_active"] and  # AI not speaking
+                        current_time > STATE["cooldown_until"]  # Past cooldown period
+                    )
+                    
+                    if should_send:
                         try:
                             await session.send_realtime_input(
                                 audio=types.Blob(data=data, mime_type="audio/pcm;rate=16000")
@@ -243,23 +310,11 @@ async def start_session():
                             if STATE["active"]:
                                 print(f"⚠️ [ENGINE] Send error: {e}")
                             break
-                    else:
-                        # AI is speaking - only send if user is LOUDLY interrupting
-                        rms = audio.get_rms(data)
-                        if rms > THRESHOLD * 3:  # Much higher threshold for intentional interruption
-                            print("🎤 [ENGINE] User interrupting...")
-                            try:
-                                await session.send_realtime_input(
-                                    audio=types.Blob(data=data, mime_type="audio/pcm;rate=16000")
-                                )
-                            except Exception:
-                                # Best-effort: ignore errors during interruption
-                                pass
                     
-                    # Debug logging every 5 seconds
-                    if time.time() - last_log > 5:
+                    # Debug logging every 10 seconds
+                    if time.time() - last_log > 10:
                         rms = audio.get_rms(data)
-                        status = "🔇 Paused (AI speaking)" if STATE["is_ai_active"] else "🎙️ Streaming"
+                        status = "🔇 Paused" if STATE["is_ai_active"] else "🎙️ Streaming"
                         print(f"📊 [DEBUG] {status} | Sent: {chunks_sent} | RMS: {rms:.4f}")
                         chunks_sent = 0
                         last_log = time.time()
@@ -268,13 +323,13 @@ async def start_session():
                     await asyncio.sleep(max(0, chunk_duration - elapsed))
 
             async def receive_loop():
-                """Handles all incoming messages from Gemini"""
+                """Handles incoming messages from Gemini - runs forever until session closes"""
                 try:
                     async for response in session.receive():
                         if not STATE["active"]:
-                            break
-                            
-                        # Content Logic
+                            break  # Only break if user requested exit
+                        
+                        # Handle server_content
                         if response.server_content:
                             content = response.server_content
                             
@@ -282,62 +337,74 @@ async def start_session():
                                 STATE["is_ai_active"] = True
                                 for part in content.model_turn.parts:
                                     if part.inline_data:
-                                        audio.playback_queue.put_nowait(part.inline_data.data)
+                                        await audio.playback_queue.put(part.inline_data.data)
                                     if part.text:
                                         print(f"🤖 Jarvis: {part.text}")
-
+                            
                             if content.turn_complete:
                                 STATE["is_ai_active"] = False
-                                await asyncio.sleep(0.5)  # Wait 500ms before accepting new input
+                                # Set cooldown to prevent echo/false interruptions
+                                STATE["cooldown_until"] = time.time() + 0.8  # 800ms cooldown
                                 print("🎧 [ENGINE] Listening...")
-                                # DON'T break - continue listening
-
+                                # DO NOT BREAK - continue the loop!
+                                continue
+                            
                             if content.interrupted:
                                 STATE["is_ai_active"] = False
-                                # Clear playback queue
+                                # Clear playback queue but DON'T exit
                                 while not audio.playback_queue.empty():
                                     try:
                                         audio.playback_queue.get_nowait()
                                     except asyncio.QueueEmpty:
                                         break
                                 print("🚨 [ENGINE] Interrupted - Listening...")
-                                # DON'T break - continue listening
-
-                            # Transcriptions - save to history and check for voice changes
+                                continue  # Keep listening
+                            
+                            # Transcriptions (for debugging/logging)
                             if hasattr(content, 'input_transcription') and content.input_transcription:
                                 if content.input_transcription.text:
                                     text = content.input_transcription.text.strip()
                                     if text:
-                                        CONVERSATION_HISTORY.append({"role": "user", "text": text})
                                         print(f"👤 You: {text}")
-                                        
-                                        # Check for voice change request
-                                        if "voice" in text.lower() and ("change" in text.lower() or "switch" in text.lower() or "use" in text.lower()):
-                                            new_voice = parse_voice_request(text)
-                                            if new_voice and new_voice != get_current_voice():
-                                                set_preference("voice", new_voice)
-                                                STATE["voice_change_requested"] = True
-                                                STATE["new_voice"] = new_voice
-                                                print(f"🎵 [SYSTEM] Voice will change to '{new_voice}' on next session")
                                         
                             if hasattr(content, 'output_transcription') and content.output_transcription:
                                 if content.output_transcription.text:
-                                    text = content.output_transcription.text.strip()
-                                    if text:
-                                        CONVERSATION_HISTORY.append({"role": "assistant", "text": text})
-                            
-                            # Trim history to last N exchanges
-                            if len(CONVERSATION_HISTORY) > MAX_HISTORY * 2:
-                                CONVERSATION_HISTORY[:] = CONVERSATION_HISTORY[-MAX_HISTORY * 2:]
-
-                        # Tool calls (Google Search is handled automatically by Gemini)
+                                    # Already printed from inline_data, skip to avoid duplication
+                                    pass
+                        
+                        # Handle tool calls
                         if response.tool_call:
-                            print("🛠️ [ENGINE] Using tool...")
+                            function_responses = []
                             
-                        # Go away signal
+                            for fc in response.tool_call.function_calls:
+                                print(f"🛠️ [TOOL] Executing: {fc.name}")
+                                
+                                # Execute the function
+                                result = execute_tool(fc.name, fc.args)
+                                
+                                # Build response
+                                function_responses.append(
+                                    types.FunctionResponse(
+                                        id=fc.id,
+                                        name=fc.name,
+                                        response={"result": result}
+                                    )
+                                )
+                            
+                            # Send results back to Gemini
+                            await session.send_tool_response(function_responses=function_responses)
+                        
+                        # Handle session resumption updates
+                        if response.session_resumption_update:
+                            new_handle = response.session_resumption_update.new_handle
+                            if new_handle:
+                                STATE["session_handle"] = new_handle
+                                print("📝 [ENGINE] Session handle updated")
+                        
+                        # Handle GoAway (server wants us to reconnect)
                         if response.go_away:
-                            print("⚠️ [ENGINE] Server ending session soon...")
-                            break  # End session on go_away
+                            print("⚠️ [ENGINE] Server requested reconnection")
+                            break  # Reconnect with handle
                             
                 except Exception as e:
                     if STATE["active"]:
@@ -363,9 +430,11 @@ async def start_session():
     except Exception as e:
         err_msg = str(e)
         if "409" in err_msg:
-            print(f"🛑 [ENGINE] Session conflict. Rotating key...")
+            print("🛑 [ENGINE] Session conflict. Rotating key...")
             STATE["key_cooldowns"][STATE["key_idx"]] = time.time()
             STATE["key_idx"] = (STATE["key_idx"] + 1) % len(KEYS)
+            # Clear invalid session handle
+            STATE["session_handle"] = None
             return True
         elif "1008" in err_msg:
             print("❌ [ENGINE] Invalid model or config: " + err_msg[:100])
@@ -387,9 +456,9 @@ async def start_session():
         audio.close()
     
     # Check if voice change was requested
-    if STATE["voice_change_requested"]:
-        STATE["voice_change_requested"] = False
-        print(f"🎵 [SYSTEM] Reconnecting with new voice: {STATE['new_voice']}")
+    if STATE.get("needs_voice_change"):
+        STATE["needs_voice_change"] = False
+        print(f"🎵 [SYSTEM] Reconnecting with new voice: {STATE['voice']}")
         return True  # Trigger reconnect with new voice
         
     return False
@@ -398,7 +467,7 @@ async def main():
     print("🤖 JARVIS Voice Assistant Starting...")
     print(f"📍 Model: {MODEL}")
     print(f"🎵 Voice: {get_current_voice()}")
-    print("💡 Tip: Speak naturally. Press Ctrl+C to exit.\n")
+    print("💡 Tip: Speak naturally. Say 'exit' to quit.\n")
     
     retry_count = 0
     max_retries = 3
@@ -409,7 +478,7 @@ async def main():
             
             if restart_needed:
                 retry_count += 1
-                if retry_count >= max_retries and not STATE["voice_change_requested"]:
+                if retry_count >= max_retries and not STATE.get("needs_voice_change"):
                     print("❌ [ENGINE] Max retries reached. Exiting...")
                     break
                 await asyncio.sleep(1)
