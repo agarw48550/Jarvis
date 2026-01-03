@@ -1,0 +1,22 @@
+"""
+  pip install bytez
+"""
+
+from bytez import Bytez
+
+key = "7bddf858a0af0cf38a22cc1c293c944a"
+sdk = Bytez(api_key=key)
+
+# choose zztheaven/Llama-3.2-1B-Instruct-skyt1-GRPO
+model = sdk.model("google/gemini-3-pro-preview")
+
+# send input to model
+
+response = model.run([
+  {
+    "role": "user",
+    "content": "Hello"
+  }
+])
+
+print({ "error": response.error, "output": response.output })

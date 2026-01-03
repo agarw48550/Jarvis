@@ -2,7 +2,7 @@
  * Bridge to communicate with Python backend
  */
 
-const PYTHON_API = 'http://localhost:5000';
+const PYTHON_API = 'http://localhost:5001';
 
 interface HealthResponse {
     status: string;
@@ -153,6 +153,53 @@ class PythonBridge {
             return data.success;
         } catch {
             return false;
+        }
+    }
+    async chat(text: string, history: { role: string; content: string }[] = []): Promise<{ text: string; tools_executed: any[]; success: boolean; error?: string }> {
+        try {
+            const response = await fetch(`${this.baseUrl}/chat`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text, history })
+            });
+            return await response.json();
+        } catch (error) {
+            return { text: '', tools_executed: [], success: false, error: String(error) };
+        }
+    }
+
+    async connectLive(onMessage: (data: any) => void): Promise<WebSocket> {
+        const wsUrl = this.baseUrl.replace('http', 'ws') + '/ws/live';
+        const ws = new WebSocket(wsUrl);
+
+        ws.onopen = () => {
+            console.log('🔌 Connected to Python Live Bridge');
+        };
+
+        ws.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                onMessage(data);
+            } catch (e) {
+                console.error('WS Parse Error', e);
+            }
+        };
+
+        ws.onerror = (e) => console.error('WS Error', e);
+
+        return new Promise((resolve, reject) => {
+            ws.onopen = () => resolve(ws);
+            ws.onerror = (e) => reject(e);
+        });
+    }
+
+    async getFacts(): Promise<string[]> {
+        try {
+            const response = await fetch(`${this.baseUrl}/memory/facts`);
+            const data = await response.json();
+            return data.facts.map((f: any) => f.fact) || [];
+        } catch {
+            return [];
         }
     }
 }
