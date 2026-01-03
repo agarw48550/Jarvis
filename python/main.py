@@ -130,11 +130,21 @@ def live_audio_socket(ws):
         # Start connection
         loop.run_until_complete(current_session.connect(system_instruction=build_system_prompt()))
         
+        # Safe WebSocket send wrapper
+        def _safe_ws_send(message_dict):
+            """Safely send over WebSocket - won't crash if closed"""
+            try:
+                if hasattr(ws, "connected") and not ws.connected:
+                    return
+                ws.send(json.dumps(message_dict))
+            except Exception as e:
+                print(f"⚠️ WebSocket send failed: {e}")
+        
         # We need to run receive_loop concurrently with reading client input
         # So we create a task
         receive_task = loop.create_task(current_session.receive_loop(
-            lambda raw: ws.send(json.dumps({"type": "audio", "data": base64.b64encode(raw).decode('utf-8')})),
-            lambda txt: ws.send(json.dumps({"type": "text", "data": txt}))
+            lambda raw: _safe_ws_send({"type": "audio", "data": base64.b64encode(raw).decode('utf-8')}),
+            lambda txt: _safe_ws_send({"type": "text", "data": txt})
         ))
         
         try:

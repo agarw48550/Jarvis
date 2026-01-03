@@ -14,6 +14,8 @@ def extract_and_execute_tools(response: str) -> Tuple[List[Tuple[str, Any]], str
     # 2. Extract standalone JSON objects (brace counting)
     json_strs = []
     json_objects_found = []
+    brace_count = 0  # Initialize brace counter
+    start_idx = -1   # Initialize start index
     in_string = False
     escape = False
     for i, char in enumerate(response):

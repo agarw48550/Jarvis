@@ -318,11 +318,6 @@ def list_voices() -> str:
     return f"Groq (Fast): {groq}\nEdge TTS (High Quality): {edge}"
 
 
-def list_voices() -> str:
-    """List available Groq voices"""
-    return f"Available Groq voices: {', '.join(GROQ_VOICES.keys())}"
-
-
 def toggle_speech() -> bool:
     """Toggle speech on/off"""
     global speech_enabled

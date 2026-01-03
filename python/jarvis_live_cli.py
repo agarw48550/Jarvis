@@ -379,20 +379,35 @@ async def start_session():
                             for fc in response.tool_call.function_calls:
                                 print(f"🛠️ [TOOL] Executing: {fc.name}")
                                 
-                                # Execute the function
-                                result = execute_tool(fc.name, fc.args)
-                                
-                                # Build response
-                                function_responses.append(
-                                    types.FunctionResponse(
-                                        id=fc.id,
-                                        name=fc.name,
-                                        response={"result": result}
+                                try:
+                                    # Execute the function
+                                    result = execute_tool(fc.name, fc.args)
+                                    
+                                    # Build success response
+                                    function_responses.append(
+                                        types.FunctionResponse(
+                                            id=fc.id,
+                                            name=fc.name,
+                                            response={"result": result}
+                                        )
                                     )
-                                )
+                                except Exception as e:
+                                    # Build error response instead of crashing
+                                    print(f"⚠️ [TOOL] Error executing {fc.name}: {e}")
+                                    function_responses.append(
+                                        types.FunctionResponse(
+                                            id=fc.id,
+                                            name=fc.name,
+                                            response={"error": f"Tool execution failed: {str(e)}"}
+                                        )
+                                    )
                             
-                            # Send results back to Gemini
-                            await session.send_tool_response(function_responses=function_responses)
+                            # Send results back to Gemini (even if errors occurred)
+                            try:
+                                await session.send_tool_response(function_responses=function_responses)
+                            except Exception as e:
+                                print(f"⚠️ [ENGINE] Failed to send tool response: {e}")
+                                # Don't break - continue listening
                         
                         # Handle session resumption updates
                         if response.session_resumption_update:
