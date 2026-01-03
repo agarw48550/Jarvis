@@ -150,14 +150,14 @@ async def chat_async(messages: list, system_prompt: str) -> str:
             try:
                 result = t.result()
                 if result: return result
-            except:
+            except Exception:
                 continue
     
     # Fallback or sequential
     for p in providers:
         try:
             return await async_call_provider(p, messages, system_prompt)
-        except:
+        except Exception:
             continue
             
     return "All AI services failed."

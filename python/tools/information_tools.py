@@ -22,7 +22,7 @@ def get_weather(city: str = "Singapore") -> str:
         desc = current['weatherDesc'][0]['value']
         
         return f"{city}: {temp} degrees Celsius, {desc}."
-    except:
+    except Exception:
         return f"Couldn't get weather for {city}."
 
 
@@ -32,5 +32,5 @@ def calculate(expression: str) -> str:
         clean = ''.join(c for c in expression if c in allowed)
         result = eval(clean)
         return f"The answer is {result}."
-    except:
+    except Exception:
         return "Couldn't calculate that."

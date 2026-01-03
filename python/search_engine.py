@@ -191,7 +191,7 @@ def search_web(query: str) -> str:
                 cleaned = clean_for_speech(" | ".join(summaries))
                 write_cache(query, cleaned)
                 return cleaned
-    except:
+    except Exception:
         pass
     
     final = f"I couldn't find information about {query}. Try being more specific."
@@ -251,7 +251,7 @@ def search_news(query: str) -> str:
         if results:
             headlines = [r.get('title', '')[:60] for r in results[:3]]
             return "Top headlines: " + ". ".join(headlines)
-    except:
+    except Exception:
         pass
     
     return "No recent news found."

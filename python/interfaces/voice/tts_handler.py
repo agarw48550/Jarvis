@@ -78,10 +78,10 @@ def interrupt_speech():
             current_speech_process.terminate()
             current_speech_process.wait(timeout=1)
             current_speech_process = None
-        except:
+        except Exception:
             try:
                 current_speech_process.kill()
-            except:
+            except Exception:
                 pass
             current_speech_process = None
 

@@ -35,7 +35,7 @@ def _get_gemini_model():
         try:
             genai.configure(api_key=key)
             return genai.GenerativeModel('gemini-1.5-flash')
-        except:
+        except Exception:
             continue
     return None
 
@@ -96,5 +96,5 @@ def analyze_screen(query: str = "Describe what is on the screen") -> str:
         if image_path and os.path.exists(image_path):
             try:
                 os.unlink(image_path)
-            except:
+            except Exception:
                 pass

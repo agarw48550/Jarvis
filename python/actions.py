@@ -36,7 +36,7 @@ def open_app(app_name: str) -> str:
     try:
         result = subprocess.run(["open", "-a", actual_app], capture_output=True, timeout=5)
         return f"Opened {actual_app}." if result.returncode == 0 else f"Couldn't find {app}."
-    except:
+    except Exception:
         return f"Error opening {app}."
 
 
@@ -65,7 +65,7 @@ def set_timer(minutes: int, label: str = "Timer") -> str:
         )
         
         return f"Timer set for {minutes} minutes. I'll notify you when it's done."
-    except:
+    except Exception:
         return "Couldn't set timer."
 
 
@@ -87,7 +87,7 @@ def control_music(action: str) -> str:
             return f"Music: {action}."
         
         return f"Unknown action. Try: play, pause, next, previous."
-    except:
+    except Exception:
         return "Couldn't control music. Is Music app installed?"
 
 
@@ -130,7 +130,7 @@ def get_battery() -> str:
             percent = match.group(1)
             charging = "charging" if "charging" in result.stdout.lower() else "on battery"
             return f"Battery at {percent} percent, {charging}."
-    except:
+    except Exception:
         pass
     return "Battery info unavailable."
 
@@ -141,7 +141,7 @@ def take_screenshot() -> str:
         path = os.path.expanduser(f"~/Desktop/{filename}")
         subprocess.run(["screencapture", "-x", path], check=True)
         return "Screenshot saved to Desktop."
-    except:
+    except Exception:
         return "Couldn't take screenshot."
 
 
@@ -160,7 +160,7 @@ def get_weather(city: str = "Singapore") -> str:
         desc = current['weatherDesc'][0]['value']
         
         return f"{city}: {temp} degrees Celsius, {desc}."
-    except:
+    except Exception:
         return f"Couldn't get weather for {city}."
 
 
@@ -190,7 +190,7 @@ def load_reminders():
     if REMINDERS_FILE.exists():
         try:
             return json.loads(REMINDERS_FILE.read_text())
-        except:
+        except Exception:
             return []
     return []
 
@@ -207,7 +207,7 @@ def calculate(expression: str) -> str:
         clean = ''.join(c for c in expression if c in allowed)
         result = eval(clean)
         return f"The answer is {result}."
-    except:
+    except Exception:
         return "Couldn't calculate that."
 
 

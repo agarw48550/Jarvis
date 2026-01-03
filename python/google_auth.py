@@ -104,7 +104,7 @@ def get_credentials():
                 creds.refresh(Request())
                 TOKEN_FILE.write_text(creds.to_json())
                 return creds
-    except:
+    except Exception:
         pass
     
     return None

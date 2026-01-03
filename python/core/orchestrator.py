@@ -48,14 +48,14 @@ class JarvisOrchestrator:
         try:
             response = requests.get("https://www.google.com", timeout=3)
             return response.status_code == 200
-        except:
+        except Exception:
             pass
         
         # Try 3: DNS resolution
         try:
             socket.gethostbyname("google.com")
             return True
-        except:
+        except Exception:
             pass
         
         return False
@@ -107,7 +107,7 @@ class JarvisOrchestrator:
                 try:
                     from core.llm_router import call_ollama
                     return call_ollama(messages, system_prompt)
-                except:
+                except Exception:
                     pass
             raise e
     

@@ -36,7 +36,7 @@ def open_app(app_name: str = None, app: str = None, application: str = None) -> 
     try:
         result = subprocess.run(["open", "-a", actual_app], capture_output=True, timeout=5)
         return f"Opened {actual_app}." if result.returncode == 0 else f"Couldn't find {app_clean}."
-    except:
+    except Exception:
         return f"Error opening {app_clean}."
 
 
@@ -57,7 +57,7 @@ def set_volume(level: int = None, volume: int = None, action: str = None, percen
     if desired_level is None and volume is not None:
         try:
             desired_level = int(str(volume).replace('%', '').strip())
-        except:
+        except Exception:
             pass
             
     if desired_level is None:
@@ -106,7 +106,7 @@ def get_battery() -> str:
         if percent_match:
             percent = percent_match.group(1)
             return f"Battery at {percent} percent, {status}."
-    except:
+    except Exception:
         pass
     return "Battery info unavailable."
 
@@ -117,5 +117,5 @@ def take_screenshot() -> str:
         path = os.path.expanduser(f"~/Desktop/{filename}")
         subprocess.run(["screencapture", "-x", path], check=True)
         return "Screenshot saved to Desktop."
-    except:
+    except Exception:
         return "Couldn't take screenshot."

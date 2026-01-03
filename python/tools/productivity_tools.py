@@ -46,7 +46,7 @@ def set_timer(minutes: int = None, seconds: int = None, duration: int = None, la
         )
         
         return f"Timer set for {minutes} minutes. I'll notify you when it's done."
-    except:
+    except Exception:
         return "Couldn't set timer."
 
 
@@ -74,7 +74,7 @@ def load_reminders():
     if REMINDERS_FILE.exists():
         try:
             return json.loads(REMINDERS_FILE.read_text())
-        except:
+        except Exception:
             return []
     return []
 

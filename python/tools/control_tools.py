@@ -20,7 +20,7 @@ def control_music(action: str) -> str:
             return f"Music: {action}."
         
         return f"Unknown action. Try: play, pause, next, previous."
-    except:
+    except Exception:
         return "Couldn't control music. Is Music app installed?"
 
 
@@ -41,5 +41,5 @@ def stop_speaking() -> str:
         from interfaces.voice.tts_handler import interrupt_speech
         interrupt_speech()
         return "Speech stopped."
-    except:
+    except Exception:
         return "__STOP_SPEECH__"

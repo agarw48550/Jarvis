@@ -144,7 +144,7 @@ class UltraAudio:
             self.in_stream.close()
             self.out_stream.stop_stream()
             self.out_stream.close()
-        except:
+        except Exception:
             pass
         self.pya.terminate()
 

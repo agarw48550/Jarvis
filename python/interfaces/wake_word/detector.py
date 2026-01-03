@@ -166,12 +166,12 @@ class WakeWordDetector:
                 if stream:
                     stream.stop_stream()
                     stream.close()
-            except: 
+            except Exception:
                 pass
             try:
                 if p:
                     p.terminate()
-            except:
+            except Exception:
                 pass
             self.is_running = False
             print("🛑 Wake word detection stopped")

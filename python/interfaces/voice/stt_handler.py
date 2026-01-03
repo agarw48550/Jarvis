@@ -103,7 +103,7 @@ def record_until_silence(max_duration: int = 15, silence_duration: float = 1.5) 
         if os.path.exists(audio_path):
             try:
                 os.unlink(audio_path)
-            except:
+            except Exception:
                 pass
         return None
 
@@ -347,7 +347,7 @@ def listen(language_hint: Optional[str] = None) -> Optional[str]:
         if os.path.exists(audio_path):
             try:
                 os.unlink(audio_path)
-            except:
+            except Exception:
                 pass
 
 
