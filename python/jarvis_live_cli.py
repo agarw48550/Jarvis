@@ -586,6 +586,13 @@ async def start_session():
             UI.error(f"Engine Exception: {err_msg[:100]}")
             return False
     finally:
+        if audio:
+            try:
+                audio.close()
+            except Exception:
+                pass
+        STATE["audio"] = None
+        
         if worker_task:
             worker_task.cancel()
             try:

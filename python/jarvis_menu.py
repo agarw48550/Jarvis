@@ -3,6 +3,7 @@ import rumps
 import os
 import sys
 import threading
+import subprocess
 from core.wakeword import WakeWordListener
 from core.session_manager import JarvisSession
 
@@ -109,7 +110,7 @@ class JarvisMenuApp(rumps.App):
         self.set_title_limited("◉")
         self.update_menu_visibility()
         
-        os.system("afplay /System/Library/Sounds/Tink.aiff")
+        subprocess.run(["afplay", "/System/Library/Sounds/Tink.aiff"], check=True)
         try:
             self.session.start()
         except Exception as e:
@@ -131,7 +132,7 @@ class JarvisMenuApp(rumps.App):
             
         threading.Thread(target=handle_detection, daemon=True).start()
 
-    def on_session_status(self, status, extra=None):
+    def on_session_status(self, status, _extra=None):
         print(f"[MENU] AI Status: {status}")
         
         if status == "STOPPED":

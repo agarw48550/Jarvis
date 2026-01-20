@@ -140,6 +140,8 @@ def live_audio_socket(ws):
                     message = await asyncio.get_running_loop().run_in_executor(
                         None, lambda: ws.receive(timeout=0.1)
                     )
+                except simple_websocket.ConnectionClosed:
+                    break
                 except Exception:
                     message = None
                     

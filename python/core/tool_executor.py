@@ -9,11 +9,21 @@ def extract_and_execute_tools(response: str) -> Tuple[List[Tuple[str, Any]], str
     
     # 1. Match code blocks: ```tool { ... } ```
     pattern_code_blocks = r'```tool\s*\n?(.*?)\n?```'
-    matches_code = re.findall(pattern_code_blocks, response, re.DOTALL)
+    
+    code_block_spans = []
+    matches_code = []
+    for m in re.finditer(pattern_code_blocks, response, re.DOTALL):
+        code_block_spans.append(m.span())
+        matches_code.append(m.group(1))
     
     # 2. Extract standalone JSON objects (brace counting)
     json_strs = []
     json_objects_found = []
+    
+    # Identify spans to skip in the brace counting to avoid duplicates
+    masked_response = response
+    for start, end in code_block_spans:
+        masked_response = masked_response[:start] + ' ' * (end - start) + masked_response[end:]
     
     # Safe Initialization
     brace_count = 0  
@@ -21,7 +31,7 @@ def extract_and_execute_tools(response: str) -> Tuple[List[Tuple[str, Any]], str
     in_string = False
     escape = False
     
-    for i, char in enumerate(response):
+    for i, char in enumerate(masked_response):
         if not escape:
             if char == '"':
                 in_string = not in_string
@@ -39,7 +49,7 @@ def extract_and_execute_tools(response: str) -> Tuple[List[Tuple[str, Any]], str
             elif char == '}':
                 brace_count -= 1
                 if brace_count == 0 and start_idx >= 0:
-                    json_str = response[start_idx:i+1]
+                    json_str = masked_response[start_idx:i+1]
                     try:
                         obj = json.loads(json_str)
                         if isinstance(obj, dict) and "tool" in obj and "params" in obj:

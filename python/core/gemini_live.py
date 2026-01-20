@@ -140,6 +140,7 @@ class GeminiLiveSession:
         backoff = 2
 
         while attempt < max_retries:
+            self._cleanup_done = False  # Reset cleanup guard for this attempt
             try:
                 # Handle Resumption if token exists
                 # Note: SDK syntax for resumption might vary, 
@@ -230,25 +231,27 @@ class GeminiLiveSession:
             return
             
         self.running = False
-        self._cleanup_done = True
         
         # Stop Heartbeat
-        if self._heartbeat_task_handle:
+        if self._heartbeat_task_handle and not self._heartbeat_task_handle.done():
             self._heartbeat_task_handle.cancel()
             try:
                 await self._heartbeat_task_handle
             except asyncio.CancelledError:
                 pass
+        self._heartbeat_task_handle = None
         
         if self.session:
             # The 'async with' block handles close, but we can explicitly try if needed
             # await self.session.close() 
             pass
             
-        if self.api_key in self._active_sessions:
-            if self._active_sessions[self.api_key] == self:
-                del self._active_sessions[self.api_key]
+        async with self._session_lock:
+            if self.api_key in self._active_sessions:
+                if self._active_sessions[self.api_key] == self:
+                    del self._active_sessions[self.api_key]
         
+        self._cleanup_done = True
         # GHOST SESSION FIX: Wait for server to cleanup
         await asyncio.sleep(2.0)
         logger.info("Session closed and cleaned up.")

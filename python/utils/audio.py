@@ -53,7 +53,7 @@ def record_until_silence(
         for _ in range(max_chunks):
             try:
                 data = stream.read(CHUNK, exception_on_overflow=False)
-            except Exception as e:
+            except (OSError, IOError) as e:
                 print(f"Error reading audio: {e}")
                 break
             frames.append(data)

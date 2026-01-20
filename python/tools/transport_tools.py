@@ -222,7 +222,7 @@ def set_home_location(query: str = None, location: str = None) -> str:
     lon = result.get("lon")
     if not lat or not lon:
         return "Location lookup returned incomplete data."
-    label = result.get("display_name", query)
+    label = result.get("display_name") or query or location or "Saved location"
     set_preference("home_lat", lat)
     set_preference("home_lon", lon)
     set_preference("home_location_label", label)
