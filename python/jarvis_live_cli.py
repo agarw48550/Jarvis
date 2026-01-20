@@ -1,5 +1,6 @@
 import asyncio
 import sys
+import os
 import pyaudio
 import time
 import numpy as np
@@ -8,6 +9,12 @@ import atexit
 import uuid
 from google import genai
 from google.genai import types
+from rich.console import Console
+from rich.panel import Panel
+from rich.text import Text
+from rich.live import Live
+from rich.table import Table
+from rich import box
 from core.config import API_KEYS, MODELS, AUDIO, SYSTEM_PROMPT_TEMPLATE, VOICE_MAPPINGS
 from core.memory import (
     init_database, 
@@ -16,17 +23,94 @@ from core.memory import (
     get_preference,
     set_preference
 )
+from tools.tool_registry import TOOLS
+
+# --- UI CONSTANTS ---
+console = Console()
+
+class JarvisUI:
+    @staticmethod
+    def banner():
+        title = Text("JARVIS V3", style="bold cyan", justify="center")
+        subtitle = Text("Advanced Live Voice Interface", style="italic blue", justify="center")
+        banner = Panel(
+            Text.assemble(title, "\n", subtitle),
+            box=box.DOUBLE,
+            border_style="bright_blue",
+            padding=(1, 2)
+        )
+        console.print(banner)
+
+    @staticmethod
+    def info(msg):
+        console.print(f"[bold cyan]ℹ️ [INFO][/bold cyan] {msg}")
+
+    @staticmethod
+    def engine(msg):
+        console.print(f"[bold blue]📡 [ENGINE][/bold blue] {msg}")
+
+    @staticmethod
+    def tool(msg):
+        console.print(f"[bold yellow]🛠️ [TOOL][/bold yellow] {msg}")
+
+    @staticmethod
+    def system(msg):
+        console.print(f"[bold green]🧹 [SYSTEM][/bold green] {msg}")
+
+    @staticmethod
+    def error(msg):
+        console.print(f"[bold red]❌ [ERROR][/bold red] {msg}")
+
+    @staticmethod
+    def debug(msg):
+        # Only print debug if needed, keeping it subtle
+        console.print(f"[dim white]📊 [DEBUG][/dim white] {msg}")
+
+    @staticmethod
+    def user(msg):
+        console.print(f"\n[bold green]👤 You:[/bold green] [white]{msg}[/white]")
+
+    @staticmethod
+    def ai(msg):
+        console.print(f"[bold cyan]🤖 Jarvis:[/bold cyan] [bright_white]{msg}[/bright_white]")
+
+UI = JarvisUI()
+
+# --- HISTORY MANAGEMENT ---
+class HistoryManager:
+    def __init__(self, max_turns=20):
+        self.history = []  # List of {"role": str, "text": str}
+        self.max_turns = max_turns
+
+    def add_turn(self, role, text):
+        if not text: return
+        # Avoid duplicate consecutive entries if needed, but for now just append
+        self.history.append({"role": role, "text": text})
+        if len(self.history) > self.max_turns:
+            self.history.pop(0)
+
+    def get_context_string(self):
+        if not self.history:
+            return ""
+        
+        lines = ["\n[RECENT CONVERSATION HISTORY (Session Restored)]"]
+        for turn in self.history:
+            lines.append(f"{turn['role']}: {turn['text']}")
+        lines.append("[End of History]\n")
+        return "\n".join(lines)
+
+HISTORY = HistoryManager()
 
 # Initialize database
 try:
     init_database()
 except Exception as e:
-    print(f"⚠️ Database initialization failed: {e}")
+    UI.error(f"Database initialization failed: {e}")
 
 # --- GLOBAL STATE ---
 KEYS = API_KEYS.gemini_keys
 if not KEYS:
-    print("❌ Critical: No API keys found in .env.")
+    UI.error("Critical: No API keys found in .env.")
     sys.exit(1)
 
 MODEL = MODELS.gemini_live_model
@@ -44,50 +128,61 @@ STATE = {
     "voice": None,  # Current voice setting
     "needs_voice_change": False,  # Signal to reconnect with new voice
     "cooldown_until": 0,  # Timestamp when we can resume sending audio
+    "audio": None,  # Current audio instance
 }
 
 _cleanup_done = False
 
 # --- TOOL DEFINITIONS ---
-JARVIS_TOOLS = [
-    types.FunctionDeclaration(
-        name="exit_jarvis",
-        description="Exit and close Jarvis when user says goodbye, exit, quit, or stop",
-        parameters=types.Schema(
-            type=types.Type.OBJECT,
-            properties={}
+def get_gemini_tools():
+    """Build tool declarations from registry + local tools"""
+    declarations = [
+        types.FunctionDeclaration(
+            name="exit_jarvis",
+            description="Exit and close Jarvis when user says goodbye, exit, quit, or stop",
+            parameters=types.Schema(type=types.Type.OBJECT, properties={})
+        ),
+        types.FunctionDeclaration(
+            name="change_voice",
+            description="Change Jarvis voice.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "voice_name": types.Schema(
+                        type=types.Type.STRING,
+                        description="Voice name: Puck, Charon, Fenrir, Aoede, Kore",
+                        enum=["Puck", "Charon", "Fenrir", "Aoede", "Kore"]
+                    )
+                },
+                required=["voice_name"]
+            )
         )
-    ),
-    types.FunctionDeclaration(
-        name="change_voice",
-        description="Change Jarvis voice. Options: Puck (default/neutral), Charon (deep male), Fenrir (bold male), Aoede (melodic female), Kore (warm female)",
-        parameters=types.Schema(
-            type=types.Type.OBJECT,
-            properties={
-                "voice_name": types.Schema(
-                    type=types.Type.STRING,
-                    description="The voice to use",
-                    enum=["Puck", "Charon", "Fenrir", "Aoede", "Kore"]
+    ]
+    
+    # Add from registry
+    for name, info in TOOLS.items():
+        if name in ["exit_jarvis", "change_voice"]: continue
+        
+        props = {}
+        required = []
+        for p_name, p_desc in info.get("parameters", {}).items():
+            props[p_name] = types.Schema(type=types.Type.STRING, description=p_desc)
+            required.append(p_name)
+            
+        declarations.append(
+            types.FunctionDeclaration(
+                name=name,
+                description=info["description"],
+                parameters=types.Schema(
+                    type=types.Type.OBJECT,
+                    properties=props,
+                    required=required
                 )
-            },
-            required=["voice_name"]
+            )
         )
-    ),
-]
+    return declarations
 
-# --- CLEANUP HANDLERS ---
-def cleanup():
-    """Cleanup function called on exit"""
-    global _cleanup_done
-    if _cleanup_done:
-        return
-    _cleanup_done = True
-    print("\n🧹 [SYSTEM] Cleaning up resources...")
-    STATE["active"] = False
-
-atexit.register(cleanup)
-signal.signal(signal.SIGINT, lambda _s, _f: (cleanup(), sys.exit(0)))
-signal.signal(signal.SIGTERM, lambda _s, _f: (cleanup(), sys.exit(0)))
+JARVIS_TOOLS = get_gemini_tools()
 
 # --- AUDIO HANDLER ---
 class UltraAudio:
@@ -123,9 +218,9 @@ class UltraAudio:
             except Exception as e:
                 if self.running:
                     consecutive_errors += 1
-                    print(f"Playback error: {e}")
+                    UI.error(f"Playback error: {e}")
                     if consecutive_errors >= 5:
-                        print("Too many consecutive errors, stopping playback")
+                        UI.error("Too many consecutive errors, stopping playback")
                         break
                     await asyncio.sleep(0.1)
                 continue
@@ -156,28 +251,44 @@ def get_current_voice():
 # --- TOOL EXECUTION ---
 def execute_tool(name: str, args: dict) -> str:
     """Execute a tool and return result string"""
-    
-    if name == "exit_jarvis":
-        STATE["active"] = False
-        return "Goodbye! Jarvis is shutting down."
-    
-    elif name == "change_voice":
-        new_voice = args.get("voice_name", "Puck")
-        STATE["voice"] = new_voice
+    try:
+        if name == "exit_jarvis":
+            STATE["active"] = False
+            return "Goodbye! Jarvis is shutting down."
         
-        # Save to persistent memory
-        set_preference("voice", new_voice)
+        elif name == "change_voice":
+            new_voice = args.get("voice_name", "Puck")
+            STATE["voice"] = new_voice
+            set_preference("voice", new_voice)
+            STATE["needs_voice_change"] = True
+            return f"Switching to {new_voice} voice. One moment..."
         
-        # Signal reconnection needed
-        STATE["needs_voice_change"] = True
+        elif name in TOOLS:
+            fn = TOOLS[name]["function"]
+            # Convert numeric strings to numbers if they look like it
+            clean_args = {}
+            for k, v in args.items():
+                if isinstance(v, str):
+                    if v.isdigit():
+                        clean_args[k] = int(v)
+                    else:
+                        try:
+                            clean_args[k] = float(v)
+                        except ValueError:
+                            clean_args[k] = v
+                else:
+                    clean_args[k] = v
+            
+            result = fn(**clean_args)
+            return str(result)
         
-        return f"Switching to {new_voice} voice. One moment..."
-    
-    return f"Unknown tool: {name}"
+        return f"Unknown tool: {name}"
+    except Exception as e:
+        return f"Error executing {name}: {str(e)}"
 
 # --- CONVERSATION MEMORY ---
-def build_system_prompt():
-    """Build system prompt with user facts and preferences"""
+def build_system_prompt(recent_context=None):
+    """Build system prompt with user facts, preferences, and optional injected history"""
     user_facts = get_facts_for_prompt()
     user_preferences = get_preferences_for_prompt()
     
@@ -191,13 +302,14 @@ def build_system_prompt():
     return SYSTEM_PROMPT_TEMPLATE.format(
         user_facts=user_facts if user_facts else "",
         user_preferences=user_preferences if user_preferences else "",
-        recent_context=""  # Session resumption handles this
+        recent_context=recent_context or ""
     )
 
 # --- SESSION LOGIC ---
 async def start_session():
     session_id = str(uuid.uuid4())[:8]
     audio = UltraAudio()
+    STATE["audio"] = audio
     worker_task = None
     send_task = None
     receive_task = None
@@ -210,14 +322,14 @@ async def start_session():
         last_error = STATE["key_cooldowns"].get(current_k_idx, 0)
         
         if now - last_error < 60:
-            print(f"⚠️ [ENGINE] Key {current_k_idx+1} on cooldown. Skipping.")
+            UI.info(f"Key {current_k_idx+1} on cooldown. Skipping.")
             STATE["key_idx"] = (STATE["key_idx"] + 1) % len(KEYS)
             continue
         all_on_cooldown = False
         break
     
     if all_on_cooldown:
-        print("⚠️ All keys on cooldown. Waiting 10 seconds...")
+        UI.error("All keys on cooldown. Waiting 10 seconds...")
         await asyncio.sleep(10)
         STATE["key_cooldowns"].clear()
     
@@ -226,10 +338,17 @@ async def start_session():
     
     # Show connection info
     if STATE.get("session_handle"):
-        print(f"\n📡 [ENGINE] Session {session_id}: Resuming with voice '{current_voice}'...")
+        UI.engine(f"Session {session_id}: Resuming with voice '{current_voice}'...")
     else:
-        print(f"\n📡 [ENGINE] Session {session_id}: New session with voice '{current_voice}'...")
+        UI.engine(f"Session {session_id}: New session with voice '{current_voice}'...")
     
+    # Inject history if this is a fresh session (or resumption failed previously)
+    history_context = ""
+    if not STATE.get("session_handle"):
+        history_context = HISTORY.get_context_string()
+        if history_context:
+            UI.info("Injecting recent conversation history...")
+
     client = genai.Client(
         api_key=key,
         http_options={'api_version': MODELS.gemini_live_api_version}
@@ -248,8 +367,7 @@ async def start_session():
     config = types.LiveConnectConfig(
         response_modalities=["AUDIO"],
         speech_config=speech_config,
-        input_audio_transcription=types.AudioTranscriptionConfig(),
-        output_audio_transcription=types.AudioTranscriptionConfig(),
+        media_resolution="MEDIA_RESOLUTION_MEDIUM",
         
         # Session resumption - maintains context across reconnects
         session_resumption=types.SessionResumptionConfig(
@@ -269,13 +387,13 @@ async def start_session():
             types.Tool(function_declarations=JARVIS_TOOLS),  # Custom functions
         ],
         
-        system_instruction=build_system_prompt()
+        system_instruction=build_system_prompt(recent_context=history_context)
     )
 
     try:
         async with client.aio.live.connect(model=MODEL, config=config) as session:
-            print(f"✅ [ENGINE] Session {session_id}: Linked.")
-            print("🎧 [ENGINE] Listening...")
+            UI.engine(f"Session {session_id}: Linked.")
+            UI.info("Listening (speak naturally)...")
             STATE["is_ai_active"] = False
             
             worker_task = asyncio.create_task(audio.playback_worker())
@@ -308,15 +426,16 @@ async def start_session():
                             chunks_sent += 1
                         except Exception as e:
                             if STATE["active"]:
-                                print(f"⚠️ [ENGINE] Send error: {e}")
+                                UI.error(f"Send error: {e}")
                             break
                     
                     # Debug logging every 10 seconds
-                    if time.time() - last_log > 10:
+                    if time.time() - last_log > 5:
                         rms = audio.get_rms(data)
-                        status = "🔇 Paused" if STATE["is_ai_active"] else "🎙️ Streaming"
-                        print(f"📊 [DEBUG] {status} | Sent: {chunks_sent} | RMS: {rms:.4f}")
-                        chunks_sent = 0
+                        status = "AI SPEAKING" if STATE["is_ai_active"] else "LISTENING"
+                        if current_time <= STATE["cooldown_until"]:
+                            status = "COOLDOWN"
+                        UI.debug(f"{status} | RMS: {rms:.4f}")
                         last_log = time.time()
                     
                     elapsed = time.perf_counter() - t_start
@@ -331,6 +450,7 @@ async def start_session():
                         
                         # Handle server_content
                         if response.server_content:
+                            STATE["last_ai_activity"] = time.time()
                             content = response.server_content
                             
                             if content.model_turn:
@@ -339,33 +459,32 @@ async def start_session():
                                     if part.inline_data:
                                         await audio.playback_queue.put(part.inline_data.data)
                                     if part.text:
-                                        print(f"🤖 Jarvis: {part.text}")
+                                        text = part.text.strip()
+                                        if text:
+                                            UI.ai(text)
+                                            HISTORY.add_turn("Jarvis", text)
                             
                             if content.turn_complete:
                                 STATE["is_ai_active"] = False
-                                # Set cooldown to prevent echo/false interruptions
-                                STATE["cooldown_until"] = time.time() + 0.8  # 800ms cooldown
-                                print("🎧 [ENGINE] Listening...")
-                                # DO NOT BREAK - continue the loop!
+                                STATE["cooldown_until"] = time.time() + 0.8
+                                UI.info("Listening...")
                                 continue
                             
                             if content.interrupted:
                                 STATE["is_ai_active"] = False
-                                # Clear playback queue but DON'T exit
                                 while not audio.playback_queue.empty():
-                                    try:
-                                        audio.playback_queue.get_nowait()
-                                    except asyncio.QueueEmpty:
-                                        break
-                                print("🚨 [ENGINE] Interrupted - Listening...")
-                                continue  # Keep listening
+                                    try: audio.playback_queue.get_nowait()
+                                    except asyncio.QueueEmpty: break
+                                UI.info("Interrupted - Listening...")
+                                continue
                             
                             # Transcriptions (for debugging/logging)
                             if hasattr(content, 'input_transcription') and content.input_transcription:
                                 if content.input_transcription.text:
                                     text = content.input_transcription.text.strip()
                                     if text:
-                                        print(f"👤 You: {text}")
+                                        UI.user(text)
+                                        HISTORY.add_turn("User", text)
                                         
                             if hasattr(content, 'output_transcription') and content.output_transcription:
                                 if content.output_transcription.text:
@@ -374,14 +493,17 @@ async def start_session():
                         
                         # Handle tool calls
                         if response.tool_call:
+                            STATE["last_ai_activity"] = time.time()
+                            STATE["is_ai_active"] = True # Model is active while calling tools
                             function_responses = []
                             
                             for fc in response.tool_call.function_calls:
-                                print(f"🛠️ [TOOL] Executing: {fc.name}")
+                                UI.tool(f"Executing: {fc.name}")
                                 
                                 try:
                                     # Execute the function
                                     result = execute_tool(fc.name, fc.args)
+                                    UI.info(f"Result: {str(result)[:100]}...")
                                     
                                     # Build success response
                                     function_responses.append(
@@ -393,7 +515,7 @@ async def start_session():
                                     )
                                 except Exception as e:
                                     # Build error response instead of crashing
-                                    print(f"⚠️ [TOOL] Error executing {fc.name}: {e}")
+                                    UI.error(f"Error executing {fc.name}: {e}")
                                     function_responses.append(
                                         types.FunctionResponse(
                                             id=fc.id,
@@ -405,8 +527,9 @@ async def start_session():
                             # Send results back to Gemini (even if errors occurred)
                             try:
                                 await session.send_tool_response(function_responses=function_responses)
+                                STATE["last_ai_activity"] = time.time()
                             except Exception as e:
-                                print(f"⚠️ [ENGINE] Failed to send tool response: {e}")
+                                UI.error(f"Failed to send tool response: {e}")
                                 # Don't break - continue listening
                         
                         # Handle session resumption updates
@@ -414,23 +537,35 @@ async def start_session():
                             new_handle = response.session_resumption_update.new_handle
                             if new_handle:
                                 STATE["session_handle"] = new_handle
-                                print("📝 [ENGINE] Session handle updated")
+                                UI.info("Session handle updated for persistence.")
                         
                         # Handle GoAway (server wants us to reconnect)
                         if response.go_away:
-                            print("⚠️ [ENGINE] Server requested reconnection")
+                            UI.info("Server requested reconnection (GoAway)")
                             break  # Reconnect with handle
                             
+                            
                 except Exception as e:
-                    if STATE["active"]:
-                        print(f"❌ [ENGINE] Receive error: {e}")
+                    UI.error(f"Receive loop error: {e}")
+                    import traceback
+                    traceback.print_exc()
+                finally:
+                     print("ℹ️ [DEBUG] Receive loop exited.")
+
+            async def watchdog():
+                """Ensures AI active flag doesn't get stuck"""
+                while STATE["active"]:
+                    await asyncio.sleep(5)
+                    if STATE["is_ai_active"] and (time.time() - STATE.get("last_ai_activity", 0) > 10):
+                        # print("🛡️ [WATCHDOG] Resetting AI active flag (stuck detected)")
+                        STATE["is_ai_active"] = False
 
             send_task = asyncio.create_task(send_loop())
             receive_task = asyncio.create_task(receive_loop())
+            watchdog_task = asyncio.create_task(watchdog())
             
-            # Wait for either to complete (or error)
             _done, pending = await asyncio.wait(
-                [send_task, receive_task],
+                [send_task, receive_task, watchdog_task],
                 return_when=asyncio.FIRST_COMPLETED
             )
             
@@ -445,17 +580,17 @@ async def start_session():
     except Exception as e:
         err_msg = str(e)
         if "409" in err_msg:
-            print("🛑 [ENGINE] Session conflict. Rotating key...")
+            UI.error("Session conflict. Rotating key...")
             STATE["key_cooldowns"][STATE["key_idx"]] = time.time()
             STATE["key_idx"] = (STATE["key_idx"] + 1) % len(KEYS)
             # Clear invalid session handle
             STATE["session_handle"] = None
             return True
         elif "1008" in err_msg:
-            print("❌ [ENGINE] Invalid model or config: " + err_msg[:100])
+            UI.error(f"Invalid model or config: {err_msg[:100]}")
             return False
         else:
-            print(f"❌ [ENGINE] Error: {err_msg[:100]}")
+            UI.error(f"Engine Exception: {err_msg[:100]}")
             return False
     finally:
         if worker_task:
@@ -468,21 +603,44 @@ async def start_session():
             send_task.cancel()
         if receive_task and not receive_task.done():
             receive_task.cancel()
-        audio.close()
     
     # Check if voice change was requested
     if STATE.get("needs_voice_change"):
         STATE["needs_voice_change"] = False
-        print(f"🎵 [SYSTEM] Reconnecting with new voice: {STATE['voice']}")
+        UI.info(f"Reconnecting with new voice: {STATE['voice']}")
         return True  # Trigger reconnect with new voice
         
     return False
 
+# --- CLEANUP HANDLERS ---
+def cleanup():
+    """Cleanup function called on exit"""
+    global _cleanup_done
+    if _cleanup_done:
+        return
+    _cleanup_done = True
+    UI.system("Cleaning up resources...")
+    STATE["active"] = False
+    if STATE.get("audio"):
+        STATE["audio"].close()
+        STATE["audio"] = None
+
+def signal_handler(sig, frame):
+    """Forceful yet clean exit to prevent hanging audio threads"""
+    console.print("\n[bold red]🛑 [SIGNAL] Interrupt received. Shutting down...[/bold red]")
+    cleanup()
+    os._exit(0)
+
+# Register handlers
+atexit.register(cleanup)
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
+
 async def main():
-    print("🤖 JARVIS Voice Assistant Starting...")
-    print(f"📍 Model: {MODEL}")
-    print(f"🎵 Voice: {get_current_voice()}")
-    print("💡 Tip: Speak naturally. Say 'exit' to quit.\n")
+    UI.banner()
+    UI.info(f"Model: [bold white]{MODEL}[/bold white]")
+    UI.info(f"Voice: [bold white]{get_current_voice()}[/bold white]")
+    UI.info("Tip: Speak naturally. Say 'exit' to quit.\n")
     
     retry_count = 0
     max_retries = 3
@@ -491,28 +649,35 @@ async def main():
         try:
             restart_needed = await start_session()
             
+            if not STATE["active"]:
+                break
+                
             if restart_needed:
                 retry_count += 1
                 if retry_count >= max_retries and not STATE.get("needs_voice_change"):
-                    print("❌ [ENGINE] Max retries reached. Exiting...")
+                    UI.error("Max retries reached. Exiting...")
                     break
                 await asyncio.sleep(1)
             else:
                 retry_count = 0
                 if STATE["active"]:
-                    print("🔄 [ENGINE] Session ended. Reconnecting in 2s...")
-                    await asyncio.sleep(2)
+                    UI.info("Session ended. Reconnecting...")
+                    await asyncio.sleep(0.1)
                     
         except asyncio.CancelledError:
             break
+        except KeyboardInterrupt:
+            break
         except Exception as e:
-            print(f"❌ [ENGINE] Unexpected error: {e}")
-            await asyncio.sleep(2)
+            if STATE["active"]:
+                UI.error(f"Unexpected error in main loop: {e}")
+                await asyncio.sleep(2)
     
-    print("👋 [ENGINE] Goodbye!")
+    # Final cleanup ensuring all tasks are dead
+    # The cleanup() function registered with atexit will handle final shutdown messages.
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
-    except KeyboardInterrupt:
-        pass  # cleanup() handles this via atexit
+    except (KeyboardInterrupt, SystemExit):
+        cleanup()

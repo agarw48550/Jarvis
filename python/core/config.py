@@ -49,7 +49,7 @@ API_KEYS = APIKeys.from_env()
 @dataclass
 class ModelConfig:
     # Gemini Live (Voice) - Force latest stable preview for audio
-    gemini_live_model: str = "gemini-2.5-flash-native-audio-preview-12-2025"
+    gemini_live_model: str = "models/gemini-2.5-flash-native-audio-preview-12-2025"
     gemini_live_api_version: str = "v1beta"
     
     # Gemini Text
@@ -159,6 +159,9 @@ VOICE BEHAVIOR:
 - For complex topics, give summaries first, then offer to elaborate
 - Don't repeat back what the user said
 - Don't announce tool usage - just use them and report results
+
+CRITICAL MEMORY INSTRUCTION:
+- If the user tells you personal information (name, location, preferences, facts), you MUST use the `add_fact` tool to save it immediately. This is the ONLY way you will remember it next time.
 
 WHEN USER ASKS TO CHANGE VOICE:
 - "male voice" or "deeper" → Switch to Charon (requires reconnection)

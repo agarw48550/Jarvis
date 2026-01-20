@@ -33,46 +33,60 @@ const startPythonBackend = () => {
 
   pythonProcess.on('close', (code) => {
     console.log(`Python process exited with code ${code} `);
+    pythonProcess = null;
   });
 };
 
-const createTray = () => {
-  const iconPath = path.join(__dirname, '../../assets/iconTemplate.png');
-  const icon = nativeImage.createFromPath(iconPath).resize({ width: 22, height: 22 });
+const iconPath = path.join(__dirname, '../../assets/iconTemplate.png');
+let icon = nativeImage.createFromPath(iconPath);
 
-  tray = new Tray(icon);
+if (icon.isEmpty()) {
+  console.warn('Tray icon not found, using default');
+  icon = nativeImage.createEmpty();
+} else {
+  icon = icon.resize({ width: 22, height: 22 });
+}
 
-  const contextMenu = Menu.buildFromTemplate([
-    {
-      label: 'Show Jarvis',
-      click: () => mainWindow?.show()
-    },
-    {
-      label: 'Restart Backend',
-      click: () => {
-        if (pythonProcess) pythonProcess.kill();
+tray = new Tray(icon);
+label: 'Restart Backend',
+  click: () => {
+    if (pythonProcess) {
+      pythonProcess.once('close', () => {
         startPythonBackend();
-      }
-    },
-    { type: 'separator' },
-    {
-      label: 'Quit',
-      click: () => app.quit()
-    }
-  ]);
-
-  tray.setToolTip('Jarvis AI');
-  tray.setContextMenu(contextMenu);
-
-  // Toggle window on click
-  tray.on('click', () => {
-    if (mainWindow?.isVisible()) {
-      mainWindow.hide();
+      });
+      pythonProcess.kill();
     } else {
-      mainWindow?.show();
-      mainWindow?.focus();
+      startPythonBackend();
     }
-  });
+  }
+click: () => mainWindow?.show()
+  },
+{
+  label: 'Restart Backend',
+    click: () => {
+      if (pythonProcess) pythonProcess.kill();
+      startPythonBackend();
+    }
+},
+{ type: 'separator' },
+{
+  label: 'Quit',
+    click: () => app.quit()
+}
+]);
+
+tray.setToolTip('Jarvis AI');
+tray.setContextMenu(contextMenu);
+
+// Toggle window on click
+tray.on('click', () => {
+  if (mainWindow?.isVisible()) {
+    mainWindow.hide();
+  } else {
+    mainWindow?.show();
+    mainWindow?.focus();
+  }
+});
 };
 
 const createWindow = () => {
@@ -132,11 +146,31 @@ app.on('before-quit', () => {
 });
 
 // Quit when all windows are closed, except on macOS. There, it's common
-// for applications and their menu bar to stay active until the user quits
-// explicitly with Cmd + Q.
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit();
+app.on('will-quit', (event) => {
+  if (pythonProcess) {
+    event.preventDefault();
+
+    // Try graceful shutdown first
+    pythonProcess.kill('SIGTERM');
+
+    // Force kill after timeout
+    const killTimeout = setTimeout(() => {
+      if (pythonProcess) {
+        pythonProcess.kill('SIGKILL');
+        pythonProcess = null;
+      }
+      app.quit();
+    }, 3000);
+
+    pythonProcess.once('close', () => {
+      clearTimeout(killTimeout);
+      pythonProcess = null;
+      app.quit();
+    });
+  } else {
+    // No python process, allow quit
+  }
+});
   }
 });
 

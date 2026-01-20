@@ -238,10 +238,47 @@ def get_home_location_label() -> str:
 
 
 def sg_bus_arrival(stop_code: str, service_no: Optional[str] = None) -> str:
-    stop_code = (stop_code or "").strip()
+    stop_code = str(stop_code).strip()
     if not stop_code:
         return "Provide a BusStopCode, e.g., '12345'."
     return _summarize_bus_stop(stop_code, None, service_no)
+
+
+def find_bus_stop(query: str) -> str:
+    """Find bus stop codes by name/description"""
+    query = query.lower().strip()
+    if not query:
+        return "Provide a location or bus stop name."
+        
+    try:
+        stops = _load_bus_stops()
+    except RuntimeError as exc:
+        return str(exc)
+        
+    matches = []
+    for stop in stops:
+        desc = (stop.get("Description") or "").lower()
+        road = (stop.get("RoadName") or "").lower()
+        code = str(stop.get("BusStopCode") or "")
+        
+        if query in desc or query in road or query == code:
+            matches.append(stop)
+            
+    if not matches:
+        return f"No bus stops found matching '{query}'."
+        
+    # Sort by relevance (exact match first)
+    matches.sort(key=lambda x: 0 if query == str(x.get("BusStopCode")) else 1)
+    
+    # Return top 5
+    results = []
+    for m in matches[:5]:
+        code = m.get("BusStopCode")
+        desc = m.get("Description")
+        road = m.get("RoadName")
+        results.append(f"{desc} ({code}) on {road}")
+        
+    return f"Found {len(matches)} stops. Top matches:\n" + "\n".join(results)
 
 
 def refresh_bus_stops() -> str:

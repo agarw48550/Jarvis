@@ -172,10 +172,6 @@ class PythonBridge {
         const wsUrl = this.baseUrl.replace('http', 'ws') + '/ws/live';
         const ws = new WebSocket(wsUrl);
 
-        ws.onopen = () => {
-            console.log('🔌 Connected to Python Live Bridge');
-        };
-
         ws.onmessage = (event) => {
             try {
                 const data = JSON.parse(event.data);
@@ -185,11 +181,15 @@ class PythonBridge {
             }
         };
 
-        ws.onerror = (e) => console.error('WS Error', e);
-
         return new Promise((resolve, reject) => {
-            ws.onopen = () => resolve(ws);
-            ws.onerror = (e) => reject(e);
+            ws.onopen = () => {
+                console.log('🔌 Connected to Python Live Bridge');
+                resolve(ws);
+            };
+            ws.onerror = (e) => {
+                console.error('WS Error', e);
+                reject(e);
+            };
         });
     }
 
@@ -197,7 +197,7 @@ class PythonBridge {
         try {
             const response = await fetch(`${this.baseUrl}/memory/facts`);
             const data = await response.json();
-            return data.facts.map((f: any) => f.fact) || [];
+            return data.facts?.map((f: any) => f.fact) || [];
         } catch {
             return [];
         }

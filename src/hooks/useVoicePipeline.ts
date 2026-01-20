@@ -124,7 +124,16 @@ export function useVoicePipeline() {
     }, []);
 
     const handleServerMessage = useCallback((data: any) => {
+        if (!data || typeof data !== 'object' || !data.type) {
+            console.warn('Invalid message format:', data);
+            return;
+        }
+
         if (data.type === 'audio') {
+            if (typeof data.data !== 'string') {
+                console.warn('Invalid audio data format');
+                return;
+            }
             // Audio Chunk from Gemini
             const float32 = base64ToFloat32(data.data);
             playbackQueueRef.current.push(float32);
@@ -133,8 +142,12 @@ export function useVoicePipeline() {
             }
         }
         else if (data.type === 'text') {
+            if (typeof data.data !== 'string') {
+                console.warn('Invalid text data format');
+                return;
+            }
             // Text update
-            store.setCurrentResponse(prev => prev + data.data);
+            store.setCurrentResponse(store.currentResponse + data.data);
             // Optionally update last assistant message
         }
     }, [playNextChunk]);
@@ -151,7 +164,7 @@ export function useVoicePipeline() {
             };
 
             // Start Audio Capture
-            startAudioCapture();
+            await startAudioCapture();
 
         } catch (e) {
             console.error('Connection failed', e);
@@ -214,60 +227,56 @@ export function useVoicePipeline() {
                     const len = bytes.byteLength;
                     for (let i = 0; i < len; i++) {
                         binary += String.fromCharCode(bytes[i]);
+                        source.connect(processorRef.current);
+                        // Connect through muted gain to avoid loopback while keeping processor active
+                        const gain = audioContextRef.current.createGain();
+                        gain.gain.value = 0;
+                        processorRef.current.connect(gain);
+                        gain.connect(audioContextRef.current.destination);
                     }
-                    const base64Data = btoa(binary);
+                };
 
-                    wsRef.current.send(JSON.stringify({
-                        type: "audio",
-                        data: base64Data
-                    }));
-                } else if (!isPlayingRef.current && store.state === 'listening') {
-                    // Silence after talking
-                    // store.setState('thinking'); // Wait for response
-                }
-            };
+                source.connect(processorRef.current);
+                processorRef.current.connect(audioContextRef.current.destination); // Mute output to speakers? No, this creates loopback.
+                // Connect to destination is needed for script processor to fire in some browsers, but we usually want to disconnect it 
+                // from speakers to avoid hearing ourselves. 
+                // In Chrome, ScriptProcessor must be connected to destination validly.
+                // To mute localloopback, create Gain(0).
+                const gain = audioContextRef.current.createGain();
+                gain.gain.value = 0;
+                processorRef.current.connect(gain);
+                gain.connect(audioContextRef.current.destination);
 
-            source.connect(processorRef.current);
-            processorRef.current.connect(audioContextRef.current.destination); // Mute output to speakers? No, this creates loopback.
-            // Connect to destination is needed for script processor to fire in some browsers, but we usually want to disconnect it 
-            // from speakers to avoid hearing ourselves. 
-            // In Chrome, ScriptProcessor must be connected to destination validly.
-            // To mute localloopback, create Gain(0).
-            const gain = audioContextRef.current.createGain();
-            gain.gain.value = 0;
-            processorRef.current.connect(gain);
-            gain.connect(audioContextRef.current.destination);
-
-        } catch (e) {
-            console.error('Mic Error', e);
-            store.setError('Microphone access denied');
-        }
-    };
-
-    useEffect(() => {
-        initConnection();
-        return () => {
-            streamRef.current?.getTracks().forEach(t => t.stop());
-            wsRef.current?.close();
-            audioContextRef.current?.close();
+            } catch (e) {
+                console.error('Mic Error', e);
+                store.setError('Microphone access denied');
+            }
         };
-    }, []);
 
-    // Placeholder actions
-    return {
-        state: store.state,
-        isOnline: store.isOnline,
-        error: store.error,
-        messages: store.messages,
-        currentTranscript: store.currentTranscript || (store.state === 'listening' ? 'Listening...' : ''),
-        currentResponse: store.currentResponse,
-        selectedVoice: store.selectedVoice,
+        useEffect(() => {
+            initConnection();
+            return () => {
+                streamRef.current?.getTracks().forEach(t => t.stop());
+                wsRef.current?.close();
+                audioContextRef.current?.close();
+            };
+        }, []);
 
-        startListening: () => { },
-        stopListening: () => { },
-        triggerManually: () => { },
-        setVoice: () => { },
-        clearMessages: store.clearMessages,
-        clearError: () => store.setError(null),
-    };
-}
+        // Placeholder actions
+        return {
+            state: store.state,
+            isOnline: store.isOnline,
+            error: store.error,
+            messages: store.messages,
+            currentTranscript: store.currentTranscript || (store.state === 'listening' ? 'Listening...' : ''),
+            currentResponse: store.currentResponse,
+            selectedVoice: store.selectedVoice,
+
+            startListening: () => { },
+            stopListening: () => { },
+            triggerManually: () => { },
+            setVoice: () => { },
+            clearMessages: store.clearMessages,
+            clearError: () => store.setError(null),
+        };
+    }

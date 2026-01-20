@@ -164,8 +164,6 @@ function ErrorBanner({ message, onDismiss }: { message: string; onDismiss: () =>
 
 // Settings Modal
 function SettingsModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
-    if (!isOpen) return null;
-
     return (
         <motion.div
             initial={{ opacity: 0 }}
@@ -216,8 +214,6 @@ function SettingsModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => vo
         </motion.div>
     );
 }
-
-// Main App
 export default function App() {
     const {
         state,

@@ -2,8 +2,12 @@ import requests
 import json
 from bytez import Bytez
 
-# Your API Key from Bytez_test
-key = "7bddf858a0af0cf38a22cc1c293c944a"
+import os
+
+# Load API key from environment variable
+key = os.environ.get("BYTEZ_API_KEY")
+if not key:
+    raise ValueError("BYTEZ_API_KEY environment variable is not set")
 
 def get_models():
     print("Fetching available models from Bytez...")
@@ -17,7 +21,7 @@ def get_models():
             "Authorization": f"Key {key}"
         }
         
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=headers, timeout=30)
         
         if response.status_code == 200:
             data = response.json()
@@ -47,7 +51,9 @@ def get_models():
 models = get_models()
 
 if models:
-    print(f"\nSuccessfully retrieved {len(models)} models.")
+if models:
+    count = len(models) if hasattr(models, '__len__') else '?'
+    print(f"\nSuccessfully retrieved {count} models.")
     print("-" * 50)
     for m in models:
         # Handle different potential response formats

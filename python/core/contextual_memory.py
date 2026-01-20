@@ -223,30 +223,17 @@ class ProactiveAssistant:
         cursor = conn.cursor()
         
         # Check if pattern exists
+        # Use UPSERT for atomic operation
         cursor.execute("""
-            SELECT pattern_id, frequency FROM usage_patterns
-            WHERE action_type = ? AND day_of_week = ? AND hour_of_day = ?
-        """, (action_type, day_of_week, hour_of_day))
-        
-        result = cursor.fetchone()
-        
-        if result:
-            # Update existing pattern
-            pattern_id, freq = result
-            cursor.execute("""
-                UPDATE usage_patterns
-                SET frequency = frequency + 1, 
-                    last_occurrence = ?,
-                    context = ?
-                WHERE pattern_id = ?
-            """, (now.timestamp(), context, pattern_id))
-        else:
-            # Create new pattern
-            cursor.execute("""
-                INSERT INTO usage_patterns
-                (action_type, day_of_week, hour_of_day, last_occurrence, context)
-                VALUES (?, ?, ?, ?, ?)
-            """, (action_type, day_of_week, hour_of_day, now.timestamp(), context))
+            INSERT INTO usage_patterns 
+            (action_type, day_of_week, hour_of_day, frequency, last_occurrence, context)
+            VALUES (?, ?, ?, 1, ?, ?)
+            ON CONFLICT(action_type, day_of_week, hour_of_day)
+            DO UPDATE SET 
+                frequency = frequency + 1,
+                last_occurrence = excluded.last_occurrence,
+                context = excluded.context
+        """, (action_type, day_of_week, hour_of_day, now.timestamp(), context))
         
         conn.commit()
         conn.close()

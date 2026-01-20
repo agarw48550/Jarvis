@@ -14,10 +14,13 @@ def extract_and_execute_tools(response: str) -> Tuple[List[Tuple[str, Any]], str
     # 2. Extract standalone JSON objects (brace counting)
     json_strs = []
     json_objects_found = []
-    brace_count = 0  # Initialize brace counter
-    start_idx = -1   # Initialize start index
+    
+    # Safe Initialization
+    brace_count = 0  
+    start_idx = -1   
     in_string = False
     escape = False
+    
     for i, char in enumerate(response):
         if char == '"' and not escape:
             in_string = not in_string
@@ -64,8 +67,20 @@ def extract_and_execute_tools(response: str) -> Tuple[List[Tuple[str, Any]], str
                 func = TOOLS[tool_name]["function"]
                 # Clean params (remove None)
                 params = {k: v for k, v in params.items() if v is not None}
-                result = func(**params) if params else func()
-                results.append((tool_name, result))
+                
+                try:
+                    result = func(**params) if params else func()
+                except Exception as e:
+                    result = f"Tool execution failed: {str(e)}"
+
+                # Sanitize Result
+                result_str = str(result)
+                if len(result_str) > 10000:
+                   result_str = result_str[:10000] + "... (truncated)"
+                
+                # Verify JSON serializability logic if needed, but for now just returning the string/obj
+                # The caller (orchestrator/main) should handle JSON serialization
+                results.append((tool_name, result_str))
         except Exception as e:
             results.append((tool_call.get("tool", "unknown"), f"Error: {e}"))
 

@@ -108,3 +108,11 @@ __pycache__/
 python/api_usage.json
 python/jarvis_memory.json
 python/reminders.json
+
+# Google API Credentials
+python/google_credentials.json
+python/google_token.json
+
+# Database temp files
+*.db-shm
+*.db-wal

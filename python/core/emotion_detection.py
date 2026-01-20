@@ -33,9 +33,9 @@ class EmotionDetector:
     ]
     
     HAPPY_PATTERNS = [
-        r'\b(thank|thanks|great|awesome|perfect|excellent|love|amazing|wonderful)\b',
+        r'\b(great|awesome|perfect|excellent|love|amazing|wonderful)\b',
         r'(😊|😃|😄|🎉|❤️|👍|✨)',
-        r'\b(appreciate|glad|happy)\b',
+        r'\b(glad|happy)\b',
     ]
     
     CONFUSED_PATTERNS = [
@@ -67,7 +67,7 @@ class EmotionDetector:
         """
         text_lower = text.lower()
         
-        # Check patterns in priority order (urgent > frustrated > confused > happy > grateful)
+        # Check patterns in priority order (urgent > frustrated > confused > grateful > happy)
         # Urgent is highest priority
         if any(re.search(pattern, text_lower) for pattern in self.URGENT_PATTERNS):
             return Emotion.URGENT

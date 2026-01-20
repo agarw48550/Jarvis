@@ -3,18 +3,6 @@
 ## ✅ Completed Components
 
 ### Phase 0: Critical Fixes
-- ✅ **STT Handler** (`interfaces/voice/stt_handler.py`)
-  - Fixed Groq Whisper API integration
-  - Added dependency checking (sox)
-  - Improved error handling and diagnostics
-  - Proper audio file cleanup
-
-- ✅ **TTS Handler** (`interfaces/voice/tts_handler.py`)
-  - Fixed Groq TTS integration
-  - Enhanced error handling
-  - Multi-language support with macOS voices
-  - Graceful fallback to macOS `say`
-
 - ✅ **Wake Word Detector** (`interfaces/wake_word/detector.py`)
   - Improved error handling
   - Better microphone permission detection

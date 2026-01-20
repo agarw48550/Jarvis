@@ -22,7 +22,7 @@ from typing import Optional
 from google import genai
 from google.genai import types
 
-from core.config import API_KEYS, MODELS, QUOTAS, SYSTEM_PROMPT
+from core.config import API_KEYS, MODELS, QUOTAS, SYSTEM_PROMPT_TEMPLATE as SYSTEM_PROMPT
 
 # ============== API Keys ==============
 CEREBRAS_KEY = API_KEYS.cerebras_key
@@ -384,8 +384,8 @@ def check_api_keys():
     remaining = max(0, MAX_DAILY_REQUESTS - tracker.get("count", 0))
     
     print("\n🔑 API Configuration:")
-    print(f"   Groq:        {'✓ ' + GROQ_KEY[:15] + '...' if GROQ_KEY else '✗ Not set'}")
-    print(f"   Cerebras:    {'✓ ' + CEREBRAS_KEY[:15] + '...' if CEREBRAS_KEY else '✗ Not set'}")
-    print(f"   OpenRouter:  {'✓ ' + OPENROUTER_KEY[:15] + '...' if OPENROUTER_KEY else '✗ Not set'}")
+    print(f"   Groq:        {'✓ Configured' if GROQ_KEY else '✗ Not set'}")
+    print(f"   Cerebras:    {'✓ Configured' if CEREBRAS_KEY else '✗ Not set'}")
+    print(f"   OpenRouter:  {'✓ Configured' if OPENROUTER_KEY else '✗ Not set'}")
     print(f"   Gemini:      {len(GEMINI_KEYS)} key(s), {remaining}/{MAX_DAILY_REQUESTS} requests remaining today")
     print()

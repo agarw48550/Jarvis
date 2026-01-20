@@ -110,80 +110,64 @@ def poll_wake_word():
 @sock.route('/ws/live')
 def live_audio_socket(ws):
     """
-    ws: WebSocket endpoint for bidirectional audio streaming with Gemini Live.
-    Client sends PCM audio -> Python -> Gemini
-    Gemini sends Audio/Text -> Python -> Client
+    WebSocket handler for Gemini Live bidirectional audio.
     """
-    
     print("🔌 Client connected to Live Socket")
     
-    try:
-        # Initialize Session
-        current_session = GeminiLiveSession()
+    current_session = GeminiLiveSession()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    def _safe_ws_send(message_dict):
+        try:
+            ws.send(json.dumps(message_dict))
+        except Exception as e:
+            print(f"⚠️ WS Send Error: {e}")
 
-        # Run async loop in this thread
-        # WebSocket loop for converting Client input -> Session.send_audio
-        
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        # Start connection
-        loop.run_until_complete(current_session.connect(system_instruction=build_system_prompt()))
-        
-        # Safe WebSocket send wrapper
-        def _safe_ws_send(message_dict):
-            """Safely send over WebSocket - won't crash if closed"""
-            try:
-                if hasattr(ws, "connected") and not ws.connected:
-                    return
-                ws.send(json.dumps(message_dict))
-            except Exception as e:
-                print(f"⚠️ WebSocket send failed: {e}")
-        
-        # We need to run receive_loop concurrently with reading client input
-        # So we create a task
-        receive_task = loop.create_task(current_session.receive_loop(
-            lambda raw: _safe_ws_send({"type": "audio", "data": base64.b64encode(raw).decode('utf-8')}),
-            lambda txt: _safe_ws_send({"type": "text", "data": txt})
-        ))
-        
+    async def run_session():
+        # Start the connection and receive loop
+        session_task = asyncio.create_task(
+            current_session.connect_and_run(
+                on_audio=lambda raw: _safe_ws_send({"type": "audio", "data": base64.b64encode(raw).decode('utf-8')}),
+                on_text=lambda txt: _safe_ws_send({"type": "text", "data": txt})
+            )
+        )
+
         try:
             while True:
                 # Read from Client
-                message = ws.receive()
-                if not message:
-                    break
+                message = ws.receive(timeout=0.1)
+                if message is None:
+                    # Check if session task died
+                    if session_task.done():
+                        break
+                    continue
                 
                 try:
                     data = json.loads(message)
                 except json.JSONDecodeError:
-                    print("Error: Invalid JSON from client")
                     continue
 
                 if data.get("type") == "audio" and current_session.running:
-                    try:
-                        # Audio chunk from client (base64)
-                        pcm = base64.b64decode(data["data"])
-                        # Send to Gemini
-                        loop.run_until_complete(current_session.send_audio_chunk(pcm))
-                    except Exception as e:
-                        print(f"Error processing audio chunk: {e}")
+                    await current_session.send_audio_chunk(base64.b64decode(data["data"]))
+                elif data.get("type") == "ping":
+                    _safe_ws_send({"type": "pong"})
                     
-        except simple_websocket.ConnectionClosed:
-            pass
+        except (simple_websocket.ConnectionClosed, Exception) as e:
+            print(f"Socket closed or error: {e}")
         finally:
-            receive_task.cancel()
+            current_session.running = False
+            session_task.cancel()
             try:
-                loop.run_until_complete(receive_task)
+                await session_task
             except asyncio.CancelledError:
                 pass
-            loop.run_until_complete(current_session.close())
-            loop.close()
-            
-    except Exception as e:
-        print(f"Live Session Error: {e}")
-        import traceback
-        traceback.print_exc()
+            await current_session.close()
+
+    try:
+        loop.run_until_complete(run_session())
+    finally:
+        loop.close()
 
 # Legacy STT and TTS endpoints removed in favor of Native Audio Dialog
 

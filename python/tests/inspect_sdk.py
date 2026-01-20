@@ -1,36 +1,29 @@
-import asyncio
-import os
+
+import sys
 import inspect
-from dotenv import load_dotenv
-from google import genai
-from google.genai.types import LiveConnectConfig
+from google.genai import types
 
-load_dotenv()
+print(f"Python Version: {sys.version}")
+try:
+    import google.genai
+    print(f"Google GenAI Version: {google.genai.__version__}")
+except AttributeError:
+    print("Google GenAI version attribute not found.")
 
-async def inspect_session():
-    api_key = os.getenv("GEMINI_API_KEY_1") or os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        print("❌ Error: GEMINI_API_KEY_1 or GEMINI_API_KEY not found in .env")
-        return
+print("\n--- LiveConnectConfig Fields ---")
+try:
+    # Try to inspect the model fields directly if it's a Pydantic model
+    for name, field in types.LiveConnectConfig.model_fields.items():
+        print(f"- {name}: {field.annotation}")
+except Exception as e:
+    print(f"Could not inspect model_fields: {e}")
+    # Fallback to init inspection
+    print("\n--- Init Signature ---")
+    print(inspect.signature(types.LiveConnectConfig.__init__))
 
-    print(f"Using API Key: {api_key[:10]}...")
-    client = genai.Client(api_key=api_key, http_options={'api_version': 'v1alpha'})
-    config = LiveConnectConfig(response_modalities=["AUDIO"])
-    
-    print("Connecting to v1alpha...")
-    try:
-        async with client.aio.live.connect(model="gemini-2.0-flash-exp", config=config) as session:
-            print(f"✅ Session Established: {session}")
-            print(f"Available attributes: {dir(session)}")
-            
-            # Check send signature
-            if hasattr(session, 'send'):
-                sig = inspect.signature(session.send)
-                print(f"session.send signature: {sig}")
-            else:
-                print("session.send attribute not found.")
-    except Exception as e:
-        print(f"❌ Connection failed: {e}")
-        
-if __name__ == "__main__":
-    asyncio.run(inspect_session())
+print("\n--- SpeechConfig Fields ---")
+try:
+    for name, field in types.SpeechConfig.model_fields.items():
+        print(f"- {name}: {field.annotation}")
+except Exception:
+    pass

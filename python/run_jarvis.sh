@@ -5,43 +5,43 @@
 
 set -e
 
+# Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-echo "🤖 Starting Jarvis CLI..."
-echo ""
+echo "========================================"
+echo "      🤖 JARVIS LIVE VOICE CLI        "
+echo "========================================"
 
-# Check if Python 3.11 is available
-if command -v python3.11 &> /dev/null; then
-    PYTHON=python3.11
-elif command -v python3 &> /dev/null; then
-    PYTHON=python3
+# Check for virtual environment
+if [ -d "venv" ]; then
+    echo "✅ Found virtual environment."
+    PYTHON_EXEC="./venv/bin/python3"
 else
-    echo "❌ Python 3 not found. Please install Python 3.11+"
-    exit 1
+    echo "⚠️  Virtual environment not found in $SCRIPT_DIR/venv"
+    echo "📦 Creating virtual environment and installing dependencies..."
+    python3 -m venv venv
+    ./venv/bin/python3 -m pip install --upgrade pip
+    ./venv/bin/python3 -m pip install -r requirements.txt
+    PYTHON_EXEC="./venv/bin/python3"
 fi
-
-echo "📦 Using $PYTHON"
-
-# Check if dependencies are installed, install if not
-$PYTHON -c "import dotenv, requests, pyttsx3" 2>/dev/null || {
-    echo "📦 Installing dependencies..."
-    $PYTHON -m pip install python-dotenv requests pyttsx3 --quiet
-}
 
 # Check for .env file
 if [ ! -f ".env" ]; then
     echo ""
     echo "⚠️  No .env file found!"
-    echo "   Creating from template..."
     if [ -f ".env.example" ]; then
         cp .env.example .env
-        echo "   Created .env from .env.example"
-        echo "   Please edit .env with your API keys!"
-        echo ""
+        echo "✅ Created .env from .env.example"
+        echo "👉 Please edit .env in $SCRIPT_DIR and add your API keys."
+        exit 1
+    else
+        echo "❌ No .env or .env.example found. Run from a valid Jarvis project directory."
+        exit 1
     fi
 fi
 
-# Run Jarvis CLI
+# Run the Jarvis Live CLI
+echo "🚀 Launching Jarvis..."
 echo ""
-$PYTHON jarvis_cli.py
+$PYTHON_EXEC jarvis_live_cli.py

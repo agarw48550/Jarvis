@@ -119,3 +119,96 @@ def take_screenshot() -> str:
         return "Screenshot saved to Desktop."
     except Exception:
         return "Couldn't take screenshot."
+
+
+def set_brightness(level: int = None, amount: str = None) -> str:
+    """Set screen brightness (0-100)"""
+    if level is None and amount is not None:
+        level = _coerce_int(amount)
+    if level is None:
+        return "Please specify a brightness level (0-100)."
+    level = max(0, min(100, level))
+    val = level / 100.0
+    try:
+        try:
+             subprocess.run(["brightness", "-l"], capture_output=True, check=True)
+             subprocess.run(["brightness", str(val)], check=True)
+             return f"Brightness set to {level}%."
+        except FileNotFoundError:
+             return "I need the 'brightness' tool installed. Run: brew install brightness"
+        except subprocess.CalledProcessError:
+             pass
+        return "I can't control brightness natively yet. Please install 'brew install brightness'."
+    except Exception as e:
+        return f"Error setting brightness: {e}"
+
+def control_media(action: str) -> str:
+    """Control system media playback: play, pause, next, previous"""
+    action = action.lower().strip()
+    
+    # Define mapping for AppleScript commands
+    # We target both Music and Spotify as they are the most common.
+    # Generic media keys via System Events key codes is another option but app-specific is more reliable.
+    
+    scripts = {
+        "play": [
+            'tell application "Music" to play',
+            'tell application "Spotify" to play'
+        ],
+        "pause": [
+            'tell application "Music" to pause',
+            'tell application "Spotify" to pause'
+        ],
+        "next": [
+            'tell application "Music" to next track',
+            'tell application "Spotify" to next track'
+        ],
+        "previous": [
+            'tell application "Music" to previous track',
+            'tell application "Spotify" to previous track'
+        ],
+        "toggle": [
+            'tell application "Music" to playpause',
+            'tell application "Spotify" to playpause'
+        ]
+    }
+    
+    if action == "stop": action = "pause"
+    if action == "resume": action = "play"
+    if action not in scripts and "play" in action and "pause" in action: action = "toggle"
+    if action not in scripts:
+        return f"Unsupported media action: {action}. Try: play, pause, next, previous."
+
+    tried_apps = []
+    for script in scripts[action]:
+        app_name = "Music" if "Music" in script else "Spotify"
+        try:
+            # Check if app is running first to avoid launching it just to pause
+            check_running = f'application "{app_name}" is running'
+            is_running = subprocess.run(["osascript", "-e", check_running], capture_output=True, text=True).stdout.strip()
+            
+            if is_running == "true":
+                subprocess.run(["osascript", "-e", script], check=True)
+                tried_apps.append(app_name)
+        except Exception:
+            continue
+            
+    if tried_apps:
+        return f"Media {action} executed on: {', '.join(tried_apps)}."
+    
+    # Generic fallback: System Events key codes for media (may require permissions)
+    # F7: 98 (Prev), F8: 100 (Play/Pause), F9: 101 (Next)
+    generic_codes = {
+        "play": 100, "pause": 100, "toggle": 100,
+        "next": 101, "previous": 98
+    }
+    
+    try:
+        code = generic_codes.get(action)
+        if code:
+            subprocess.run(["osascript", "-e", f'tell application "System Events" to key code {code}'], check=True)
+            return f"Performed {action} via system media keys."
+    except Exception:
+        pass
+
+    return "No active media players found (checked Music and Spotify)."

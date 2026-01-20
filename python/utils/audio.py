@@ -71,20 +71,25 @@ def record_until_silence(
             if silent_chunks >= chunks_for_silence and len(frames) > chunks_for_silence: 
                 print("🔇 Silence detected, stopping recording")
                 break
+                break
     finally:
         if 'stream' in locals() and stream.is_active():
             stream.stop_stream()
             stream.close()
-        p.terminate()
     
     # Save to WAV file
     output_path = str(TEMP_DIR / 'recorded_audio.wav')
     
-    with wave.open(output_path, 'wb') as wf:
-        wf.setnchannels(CHANNELS)
-        wf.setsampwidth(p.get_sample_size(FORMAT))
-        wf.setframerate(sample_rate)
-        wf.writeframes(b''.join(frames))
+    try:
+        with wave.open(output_path, 'wb') as wf:
+            wf.setnchannels(CHANNELS)
+            # Safe to call get_sample_size as p is still active
+            wf.setsampwidth(p.get_sample_size(FORMAT))
+            wf.setframerate(sample_rate)
+            wf.writeframes(b''.join(frames))
+    finally:
+        # Terminate PyAudio strictly after usage
+        p.terminate()
     
     print(f"✅ Recorded {len(frames) * CHUNK / sample_rate:.1f} seconds")
     
