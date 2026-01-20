@@ -117,7 +117,7 @@ Required in `.env`:
 
 ## 📁 File Structure
 
-```
+```text
 jarvis/python/
 ├── core/
 │   ├── __init__.py

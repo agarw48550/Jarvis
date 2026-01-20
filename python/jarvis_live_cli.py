@@ -292,13 +292,6 @@ def build_system_prompt(recent_context=None):
     user_facts = get_facts_for_prompt()
     user_preferences = get_preferences_for_prompt()
     
-    # Build context
-    context_parts = []
-    if user_facts:
-        context_parts.append(user_facts)
-    if user_preferences:
-        context_parts.append(user_preferences)
-    
     return SYSTEM_PROMPT_TEMPLATE.format(
         user_facts=user_facts if user_facts else "",
         user_preferences=user_preferences if user_preferences else "",

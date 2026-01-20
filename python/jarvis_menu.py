@@ -146,9 +146,13 @@ class JarvisMenuApp(rumps.App):
             self.set_title_limited("◌")
 
     def check_auth(self, _):
+        import subprocess
+        import shlex
         script_path = os.path.join(script_dir, "google_auth.py")
-        cmd = f"osascript -e 'tell application \"Terminal\" to activate' -e 'tell application \"Terminal\" to do script \"cd \\\"{script_dir}\\\" && ./venv/bin/python3 \\\"{script_path}\\\"\"'"
-        os.system(cmd)
+        # Use subprocess.run with argument list to avoid shell injection
+        activate_script = 'tell application "Terminal" to activate'
+        do_script = f'tell application "Terminal" to do script "cd {shlex.quote(script_dir)} && ./venv/bin/python3 {shlex.quote(script_path)}"'
+        subprocess.run(["osascript", "-e", activate_script, "-e", do_script], check=False)
         rumps.notification("Jarvis Setup", "Opening Terminal", "Please follow instructions to authorize Google.")
 
 if __name__ == "__main__":

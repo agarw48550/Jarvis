@@ -22,11 +22,12 @@ def extract_and_execute_tools(response: str) -> Tuple[List[Tuple[str, Any]], str
     escape = False
     
     for i, char in enumerate(response):
-        if char == '"' and not escape:
-            in_string = not in_string
-        
-        if char == '\\' and not escape:
-            escape = True
+        if not escape:
+            if char == '"':
+                in_string = not in_string
+            elif char == '\\' and in_string:
+                escape = True
+                continue
         else:
             escape = False
             

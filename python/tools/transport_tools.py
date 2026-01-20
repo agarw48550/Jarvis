@@ -194,7 +194,7 @@ def _summarize_bus_stop(stop_code: str, description: Optional[str], service_no: 
         payload = _fetch_bus_arrivals(stop_code, service_no)
     except Exception as exc:
         if "404" in str(exc):
-            return f"Couldn't reach Datamall (404 Not Found). Check API endpoint or key permissions."
+            return "Couldn't reach Datamall (404 Not Found). Check API endpoint or key permissions."
         return f"Couldn't reach Datamall ({exc})"
 
     services = payload.get("Services", [])

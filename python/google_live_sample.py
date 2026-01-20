@@ -50,6 +50,7 @@ class AudioLoop:
         self.out_queue = None
         self.session = None
         self.audio_stream = None
+        self.play_stream = None
 
     async def send_text(self):
         while True:
@@ -79,13 +80,15 @@ class AudioLoop:
 
     async def get_frames(self):
         cap = await asyncio.to_thread(cv2.VideoCapture, 0)
-        while True:
-            frame = await asyncio.to_thread(self._get_frame, cap)
-            if frame is None:
-                break
-            await asyncio.sleep(1.0)
-            await self.out_queue.put(frame)
-        cap.release()
+        try:
+            while True:
+                frame = await asyncio.to_thread(self._get_frame, cap)
+                if frame is None:
+                    break
+                await asyncio.sleep(1.0)
+                await self.out_queue.put(frame)
+        finally:
+            await asyncio.to_thread(cap.release)
 
     def _get_screen(self):
         sct = mss.mss()
@@ -150,7 +153,7 @@ class AudioLoop:
                 break
 
     async def play_audio(self):
-        stream = await asyncio.to_thread(
+        self.play_stream = await asyncio.to_thread(
             pya.open,
             format=FORMAT,
             channels=CHANNELS,
@@ -159,7 +162,7 @@ class AudioLoop:
         )
         while True:
             bytestream = await self.audio_in_queue.get()
-            await asyncio.to_thread(stream.write, bytestream)
+            await asyncio.to_thread(self.play_stream.write, bytestream)
 
     async def run(self):
         try:
@@ -195,6 +198,8 @@ class AudioLoop:
         finally:
             if self.audio_stream:
                 self.audio_stream.close()
+            if self.play_stream:
+                self.play_stream.close()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

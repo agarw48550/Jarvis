@@ -135,8 +135,14 @@ def live_audio_socket(ws):
 
         try:
             while True:
-                # Read from Client
-                message = ws.receive(timeout=0.1)
+                # Read from Client using executor to avoid blocking the event loop
+                try:
+                    message = await asyncio.get_running_loop().run_in_executor(
+                        None, lambda: ws.receive(timeout=0.1)
+                    )
+                except Exception:
+                    message = None
+                    
                 if message is None:
                     # Check if session task died
                     if session_task.done():

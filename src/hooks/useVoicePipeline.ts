@@ -19,25 +19,25 @@ interface VoicePipelineStore {
     messages: Message[];
     currentTranscript: string;
     currentResponse: string;
+    selectedVoice: string;
 
     setState: (state: PipelineState) => void;
     setIsOnline: (online: boolean) => void;
     setError: (error: string | null) => void;
     addMessage: (message: Message) => void;
     setCurrentTranscript: (text: string) => void;
-    setCurrentResponse: (text: string) => void;
+    setCurrentResponse: (text: string | ((prev: string) => string)) => void;
     clearMessages: () => void;
 }
 
-export const useVoicePipelineStore = create<VoicePipelineStore>((set) => ({
+export const useVoicePipelineStore = create<VoicePipelineStore>((set, get) => ({
     state: 'idle',
     isOnline: true,
     error: null,
     messages: [],
     currentTranscript: '',
     currentResponse: '',
-    selectedVoice: 'male', // Legacy support
-    userFacts: [],
+    selectedVoice: 'male',
 
     setState: (state) => set({ state }),
     setIsOnline: (isOnline) => set({ isOnline }),
@@ -46,7 +46,9 @@ export const useVoicePipelineStore = create<VoicePipelineStore>((set) => ({
         messages: [...s.messages.slice(-50), message]
     })),
     setCurrentTranscript: (currentTranscript) => set({ currentTranscript }),
-    setCurrentResponse: (currentResponse) => set({ currentResponse }),
+    setCurrentResponse: (textOrFn) => set((s) => ({
+        currentResponse: typeof textOrFn === 'function' ? textOrFn(s.currentResponse) : textOrFn
+    })),
     clearMessages: () => set({ messages: [], currentTranscript: '', currentResponse: '' }),
 }));
 
@@ -118,8 +120,6 @@ export function useVoicePipeline() {
         isPlayingRef.current = true;
 
         // When this chunk ends, try scheduling next if queue not empty
-        // Actually, we can schedule all in advance? 
-        // Better to check queue periodically or chain them.
         setTimeout(playNextChunk, (buffer.duration * 1000) / 1.5);
     }, []);
 
@@ -146,9 +146,8 @@ export function useVoicePipeline() {
                 console.warn('Invalid text data format');
                 return;
             }
-            // Text update
-            store.setCurrentResponse(store.currentResponse + data.data);
-            // Optionally update last assistant message
+            // Text update - use functional update to get fresh state
+            store.setCurrentResponse((prev: string) => prev + data.data);
         }
     }, [playNextChunk]);
 
@@ -199,8 +198,7 @@ export function useVoicePipeline() {
 
                 const inputData = e.inputBuffer.getChannelData(0);
 
-                // Simple VAD / Volume check to skip silence?
-                // Gemini handles silence well, but to save bandwidth:
+                // Simple VAD / Volume check to skip silence
                 let sum = 0;
                 for (let i = 0; i < inputData.length; i++) sum += inputData[i] * inputData[i];
                 const rms = Math.sqrt(sum / inputData.length);
@@ -212,71 +210,64 @@ export function useVoicePipeline() {
                     if (isPlayingRef.current) {
                         playbackQueueRef.current = []; // Clear queue
                         nextStartTimeRef.current = 0;
-                        // Cannot easily stop scheduled nodes without tracking them, 
-                        // but clearing queue prevents future chunks.
-                        // Ideally we call source.stop() on active nodes.
                     }
 
                     // Convert and Send
                     const pcm16 = floatTo16BitPCM(inputData);
 
                     // Base64 encode raw bytes
-                    // Standard btoa needs string
                     let binary = '';
                     const bytes = new Uint8Array(pcm16.buffer);
                     const len = bytes.byteLength;
                     for (let i = 0; i < len; i++) {
                         binary += String.fromCharCode(bytes[i]);
-                        source.connect(processorRef.current);
-                        // Connect through muted gain to avoid loopback while keeping processor active
-                        const gain = audioContextRef.current.createGain();
-                        gain.gain.value = 0;
-                        processorRef.current.connect(gain);
-                        gain.connect(audioContextRef.current.destination);
                     }
-                };
+                    const base64Data = btoa(binary);
 
-                source.connect(processorRef.current);
-                processorRef.current.connect(audioContextRef.current.destination); // Mute output to speakers? No, this creates loopback.
-                // Connect to destination is needed for script processor to fire in some browsers, but we usually want to disconnect it 
-                // from speakers to avoid hearing ourselves. 
-                // In Chrome, ScriptProcessor must be connected to destination validly.
-                // To mute localloopback, create Gain(0).
-                const gain = audioContextRef.current.createGain();
-                gain.gain.value = 0;
-                processorRef.current.connect(gain);
-                gain.connect(audioContextRef.current.destination);
-
-            } catch (e) {
-                console.error('Mic Error', e);
-                store.setError('Microphone access denied');
-            }
-        };
-
-        useEffect(() => {
-            initConnection();
-            return () => {
-                streamRef.current?.getTracks().forEach(t => t.stop());
-                wsRef.current?.close();
-                audioContextRef.current?.close();
+                    wsRef.current.send(JSON.stringify({
+                        type: "audio",
+                        data: base64Data
+                    }));
+                }
             };
-        }, []);
 
-        // Placeholder actions
-        return {
-            state: store.state,
-            isOnline: store.isOnline,
-            error: store.error,
-            messages: store.messages,
-            currentTranscript: store.currentTranscript || (store.state === 'listening' ? 'Listening...' : ''),
-            currentResponse: store.currentResponse,
-            selectedVoice: store.selectedVoice,
+            source.connect(processorRef.current);
+            // Connect through muted gain to avoid loopback while keeping processor active
+            const gain = audioContextRef.current.createGain();
+            gain.gain.value = 0;
+            processorRef.current.connect(gain);
+            gain.connect(audioContextRef.current.destination);
 
-            startListening: () => { },
-            stopListening: () => { },
-            triggerManually: () => { },
-            setVoice: () => { },
-            clearMessages: store.clearMessages,
-            clearError: () => store.setError(null),
+        } catch (e) {
+            console.error('Mic Error', e);
+            store.setError('Microphone access denied');
+        }
+    };
+
+    useEffect(() => {
+        initConnection();
+        return () => {
+            streamRef.current?.getTracks().forEach(t => t.stop());
+            wsRef.current?.close();
+            audioContextRef.current?.close();
         };
-    }
+    }, []);
+
+    // Placeholder actions
+    return {
+        state: store.state,
+        isOnline: store.isOnline,
+        error: store.error,
+        messages: store.messages,
+        currentTranscript: store.currentTranscript || (store.state === 'listening' ? 'Listening...' : ''),
+        currentResponse: store.currentResponse,
+        selectedVoice: store.selectedVoice,
+
+        startListening: () => { },
+        stopListening: () => { },
+        triggerManually: () => { },
+        setVoice: () => { },
+        clearMessages: store.clearMessages,
+        clearError: () => store.setError(null),
+    };
+}

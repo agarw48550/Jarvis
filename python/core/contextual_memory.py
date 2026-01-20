@@ -201,7 +201,8 @@ class ProactiveAssistant:
                 hour_of_day INTEGER,
                 frequency INTEGER DEFAULT 1,
                 last_occurrence REAL,
-                context TEXT
+                context TEXT,
+                UNIQUE(action_type, day_of_week, hour_of_day)
             )
         """)
         conn.commit()

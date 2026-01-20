@@ -3,7 +3,7 @@
  * Jarvis AI Assistant - Main Application (FIXED)
  */
 
-import React from 'react';
+import React, { useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useVoicePipeline, PipelineState } from './hooks/useVoicePipeline';
 
@@ -164,6 +164,45 @@ function ErrorBanner({ message, onDismiss }: { message: string; onDismiss: () =>
 
 // Settings Modal
 function SettingsModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
+    const [selectedVoice, setSelectedVoice] = React.useState<'Male' | 'Female'>('Male');
+    const modalRef = useRef<HTMLDivElement>(null);
+    const closeButtonRef = useRef<HTMLButtonElement>(null);
+
+    // Focus trap and keyboard handling
+    useEffect(() => {
+        if (!isOpen) return;
+
+        // Focus the close button on mount
+        closeButtonRef.current?.focus();
+
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') {
+                onClose();
+            }
+            // Basic focus trap
+            if (e.key === 'Tab' && modalRef.current) {
+                const focusableElements = modalRef.current.querySelectorAll(
+                    'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+                );
+                const firstElement = focusableElements[0] as HTMLElement;
+                const lastElement = focusableElements[focusableElements.length - 1] as HTMLElement;
+
+                if (e.shiftKey && document.activeElement === firstElement) {
+                    e.preventDefault();
+                    lastElement?.focus();
+                } else if (!e.shiftKey && document.activeElement === lastElement) {
+                    e.preventDefault();
+                    firstElement?.focus();
+                }
+            }
+        };
+
+        document.addEventListener('keydown', handleKeyDown);
+        return () => document.removeEventListener('keydown', handleKeyDown);
+    }, [isOpen, onClose]);
+
+    if (!isOpen) return null;
+
     return (
         <motion.div
             initial={{ opacity: 0 }}
@@ -171,8 +210,12 @@ function SettingsModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => vo
             exit={{ opacity: 0 }}
             className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
             onClick={onClose}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="settings-title"
         >
             <motion.div
+                ref={modalRef}
                 initial={{ scale: 0.95, opacity: 0 }}
                 animate={{ scale: 1, opacity: 1 }}
                 exit={{ scale: 0.95, opacity: 0 }}
@@ -180,8 +223,15 @@ function SettingsModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => vo
                 onClick={e => e.stopPropagation()}
             >
                 <div className="p-6 border-b border-white/10 flex justify-between items-center">
-                    <h2 className="text-xl font-semibold text-white">Settings</h2>
-                    <button onClick={onClose} className="text-white/50 hover:text-white transition-colors">×</button>
+                    <h2 id="settings-title" className="text-xl font-semibold text-white">Settings</h2>
+                    <button
+                        ref={closeButtonRef}
+                        onClick={onClose}
+                        className="text-white/50 hover:text-white transition-colors text-2xl"
+                        aria-label="Close settings"
+                    >
+                        ×
+                    </button>
                 </div>
 
                 <div className="p-6 space-y-6">
@@ -189,8 +239,16 @@ function SettingsModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => vo
                     <div className="space-y-3">
                         <label className="text-sm font-medium text-blue-200 uppercase tracking-wider">Voice</label>
                         <div className="grid grid-cols-2 gap-3">
-                            {['Male', 'Female'].map((v) => (
-                                <button key={v} className="px-4 py-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 transition-all text-sm">
+                            {(['Male', 'Female'] as const).map((v) => (
+                                <button
+                                    key={v}
+                                    onClick={() => setSelectedVoice(v)}
+                                    className={`px-4 py-2 rounded-lg border transition-all text-sm ${selectedVoice === v
+                                            ? 'bg-blue-500/30 border-blue-400/50 text-white'
+                                            : 'bg-white/5 hover:bg-white/10 border-white/10 text-white/70'
+                                        }`}
+                                    aria-pressed={selectedVoice === v}
+                                >
                                     {v}
                                 </button>
                             ))}

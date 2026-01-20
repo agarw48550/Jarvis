@@ -51,7 +51,6 @@ def get_models():
 models = get_models()
 
 if models:
-if models:
     count = len(models) if hasattr(models, '__len__') else '?'
     print(f"\nSuccessfully retrieved {count} models.")
     print("-" * 50)

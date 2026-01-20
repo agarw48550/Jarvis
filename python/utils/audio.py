@@ -71,7 +71,6 @@ def record_until_silence(
             if silent_chunks >= chunks_for_silence and len(frames) > chunks_for_silence: 
                 print("🔇 Silence detected, stopping recording")
                 break
-                break
     finally:
         if 'stream' in locals() and stream.is_active():
             stream.stop_stream()

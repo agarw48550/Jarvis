@@ -93,18 +93,6 @@ class GeminiLiveSession:
         
         return types.LiveConnectConfig(**config_args)
 
-    async def connect_and_run(
-        self, 
-        on_audio: Callable[[bytes], Any], 
-        on_text: Callable[[str], Any],
-        system_instruction: str = None
-    ):
-        """
-        Connects to Gemini Live and runs the receive loop.
-        This is the main entry point to be used within a Task.
-        """
-        config = self._get_config(system_instruction)
-        
     async def _heartbeat_task(self):
         """Sends silent audio if no activity to keep connection alive."""
         logger.info("💓 Heartbeat task started")

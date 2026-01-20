@@ -18,75 +18,103 @@ const startPythonBackend = () => {
   const scriptPath = path.join(__dirname, '../../python/main.py');
   console.log('Starting Python backend from:', scriptPath);
 
-  // Prefer python3.11, fallback to python3
-  const pythonCmd = process.platform === 'win32' ? 'python' : 'python3.11';
+  // Candidate Python commands to try
+  const candidates = process.platform === 'win32'
+    ? ['python']
+    : ['python3.11', 'python3', 'python'];
 
-  pythonProcess = spawn(pythonCmd, [scriptPath]);
+  let candidateIndex = 0;
 
-  pythonProcess.stdout?.on('data', (data) => {
-    console.log(`[Python]: ${data} `);
-  });
+  const trySpawn = () => {
+    if (candidateIndex >= candidates.length) {
+      console.error('Failed to start Python backend: No working Python interpreter found');
+      pythonProcess = null;
+      return;
+    }
 
-  pythonProcess.stderr?.on('data', (data) => {
-    console.error(`[Python API Error]: ${data} `);
-  });
+    const pythonCmd = candidates[candidateIndex];
+    console.log(`Trying Python command: ${pythonCmd}`);
 
-  pythonProcess.on('close', (code) => {
-    console.log(`Python process exited with code ${code} `);
-    pythonProcess = null;
-  });
+    pythonProcess = spawn(pythonCmd, [scriptPath]);
+
+    pythonProcess.on('error', (err: NodeJS.ErrnoException) => {
+      if (err.code === 'ENOENT') {
+        console.log(`Python command '${pythonCmd}' not found, trying next...`);
+        candidateIndex++;
+        trySpawn();
+      } else {
+        console.error(`Python process error: ${err.message}`);
+        pythonProcess = null;
+      }
+    });
+
+    pythonProcess.stdout?.on('data', (data) => {
+      console.log(`[Python]: ${data}`);
+    });
+
+    pythonProcess.stderr?.on('data', (data) => {
+      console.error(`[Python API Error]: ${data}`);
+    });
+
+    pythonProcess.on('close', (code) => {
+      console.log(`Python process exited with code ${code}`);
+      pythonProcess = null;
+    });
+  };
+
+  trySpawn();
 };
 
-const iconPath = path.join(__dirname, '../../assets/iconTemplate.png');
-let icon = nativeImage.createFromPath(iconPath);
+const createTray = () => {
+  const iconPath = path.join(__dirname, '../../assets/iconTemplate.png');
+  let icon = nativeImage.createFromPath(iconPath);
 
-if (icon.isEmpty()) {
-  console.warn('Tray icon not found, using default');
-  icon = nativeImage.createEmpty();
-} else {
-  icon = icon.resize({ width: 22, height: 22 });
-}
-
-tray = new Tray(icon);
-label: 'Restart Backend',
-  click: () => {
-    if (pythonProcess) {
-      pythonProcess.once('close', () => {
-        startPythonBackend();
-      });
-      pythonProcess.kill();
-    } else {
-      startPythonBackend();
-    }
-  }
-click: () => mainWindow?.show()
-  },
-{
-  label: 'Restart Backend',
-    click: () => {
-      if (pythonProcess) pythonProcess.kill();
-      startPythonBackend();
-    }
-},
-{ type: 'separator' },
-{
-  label: 'Quit',
-    click: () => app.quit()
-}
-]);
-
-tray.setToolTip('Jarvis AI');
-tray.setContextMenu(contextMenu);
-
-// Toggle window on click
-tray.on('click', () => {
-  if (mainWindow?.isVisible()) {
-    mainWindow.hide();
+  if (icon.isEmpty()) {
+    console.warn('Tray icon not found, using default');
+    icon = nativeImage.createEmpty();
   } else {
-    mainWindow?.show();
-    mainWindow?.focus();
+    icon = icon.resize({ width: 22, height: 22 });
   }
-});
+
+  tray = new Tray(icon);
+
+  const contextMenu = Menu.buildFromTemplate([
+    {
+      label: 'Show Window',
+      click: () => mainWindow?.show()
+    },
+    {
+      label: 'Restart Backend',
+      click: () => {
+        if (pythonProcess) {
+          pythonProcess.once('close', () => {
+            startPythonBackend();
+          });
+          pythonProcess.kill();
+        } else {
+          startPythonBackend();
+        }
+      }
+    },
+    { type: 'separator' },
+    {
+      label: 'Quit',
+      click: () => app.quit()
+    }
+  ]);
+
+  tray.setToolTip('Jarvis AI');
+  tray.setContextMenu(contextMenu);
+
+  // Toggle window on click
+  tray.on('click', () => {
+    if (mainWindow?.isVisible()) {
+      mainWindow.hide();
+    } else {
+      mainWindow?.show();
+      mainWindow?.focus();
+    }
+  });
 };
 
 const createWindow = () => {
@@ -145,7 +173,7 @@ app.on('before-quit', () => {
   isQuitting = true;
 });
 
-// Quit when all windows are closed, except on macOS. There, it's common
+// Quit when all windows are closed, except on macOS.
 app.on('will-quit', (event) => {
   if (pythonProcess) {
     event.preventDefault();
@@ -167,10 +195,6 @@ app.on('will-quit', (event) => {
       pythonProcess = null;
       app.quit();
     });
-  } else {
-    // No python process, allow quit
-  }
-});
   }
 });
 
