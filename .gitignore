@@ -112,6 +112,7 @@ python/reminders.json
 # Google API Credentials
 python/google_credentials.json
 python/google_token.json
+python/google_token_assistant.json
 
 # Database temp files
 *.db-shm

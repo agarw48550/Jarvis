@@ -12,10 +12,21 @@ from dotenv import load_dotenv
 load_dotenv()
 
 SCOPES = [
+    # Gmail
     'https://www.googleapis.com/auth/gmail.send',
     'https://www.googleapis.com/auth/gmail.readonly',
+    # Calendar
     'https://www.googleapis.com/auth/calendar',
     'https://www.googleapis.com/auth/calendar.events',
+    # Drive
+    'https://www.googleapis.com/auth/drive.readonly',
+    # Classroom
+    'https://www.googleapis.com/auth/classroom.courses.readonly',
+    'https://www.googleapis.com/auth/classroom.rosters.readonly',
+    # People (Contacts)
+    'https://www.googleapis.com/auth/contacts.readonly',
+    # Assistant
+    'https://www.googleapis.com/auth/assistant-sdk-prototype',
 ]
 
 TOKEN_FILE = Path(__file__).parent / "google_token.json"
@@ -52,6 +63,7 @@ def authenticate():
         from google.oauth2.credentials import Credentials
         from google_auth_oauthlib.flow import InstalledAppFlow
         from google.auth.transport.requests import Request
+        from google.auth.exceptions import RefreshError
     except ImportError:
         print("❌ Install: pip install google-auth-oauthlib google-api-python-client")
         return None
@@ -65,9 +77,17 @@ def authenticate():
     # Refresh or get new token
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            print("🔄 Refreshing token...")
-            creds.refresh(Request())
-        else:
+            try:
+                print("🔄 Refreshing token...")
+                creds.refresh(Request())
+            except Exception as e:
+                print(f"⚠️ Token refresh failed ({e}); removing old token and starting fresh auth.")
+                try:
+                    TOKEN_FILE.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                creds = None
+        if not creds or not creds.valid:
             # Create credentials file if needed
             if not CREDS_FILE.exists():
                 if not create_credentials_file():

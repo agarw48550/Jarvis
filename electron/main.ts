@@ -165,6 +165,24 @@ app.on('ready', () => {
   createTray();
 
   // Global shortcut could be added here (e.g. Cmd+Shift+Space)
+
+  // System Sleep/Wake Handling
+  const { powerMonitor } = require('electron');
+
+  powerMonitor.on('suspend', () => {
+    console.log('System going to sleep - stopping Python backend');
+    if (pythonProcess) {
+      pythonProcess.kill();
+      pythonProcess = null;
+    }
+  });
+
+  powerMonitor.on('resume', () => {
+    console.log('System waking up - restarting Python backend');
+    if (!pythonProcess) {
+      startPythonBackend();
+    }
+  });
 });
 
 let isQuitting = false;

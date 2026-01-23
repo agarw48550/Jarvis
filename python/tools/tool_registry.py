@@ -20,6 +20,17 @@ from tools.transport_tools import (
 from tools.dev_tools import write_extension, run_python_script, list_extensions
 from tools.vision_tools import analyze_screen
 from tools.external_llms import ask_groq, ask_cerebras, init_external_llms
+from tools.google_tools import (
+    list_drive_files,
+    search_drive,
+    list_classroom_courses,
+    get_classroom_assignments,
+    get_contacts,
+    get_directions,
+    get_places_nearby,
+    get_timezone,
+)
+from tools.google_assistant import control_device
 from search_engine import search_news, search_web
 
 # Initialize LLMs
@@ -68,4 +79,17 @@ TOOLS = {
     "ask_groq": {"function": ask_groq, "description": "Ask a question to Llama 3 on Groq (ultra-fast).", "parameters": {"prompt": "question", "model": "optional model ID"}},
     "ask_cerebras": {"function": ask_cerebras, "description": "Ask a question to Llama on Cerebras (ultra-fast).", "parameters": {"prompt": "question", "model": "optional model ID"}},
     "update_ai_behavior": {"function": update_ai_behavior, "description": "Update AI personality or behavior style", "parameters": {"style_key": "voice_style/humor_level/formality", "value": "description of new style"}},
+    
+    # Google Cloud API Tools
+    "list_drive_files": {"function": list_drive_files, "description": "List files from Google Drive", "parameters": {"query": "optional search query", "max_results": "number of files"}},
+    "search_drive": {"function": search_drive, "description": "Search Google Drive for files", "parameters": {"query": "search query"}},
+    "list_classroom_courses": {"function": list_classroom_courses, "description": "List enrolled Google Classroom courses", "parameters": {}},
+    "get_classroom_assignments": {"function": get_classroom_assignments, "description": "Get assignments from a Classroom course", "parameters": {"course_id": "course ID", "course_name": "or course name"}},
+    "get_contacts": {"function": get_contacts, "description": "Search contacts from Google People", "parameters": {"query": "optional name to search", "max_results": "number of contacts"}},
+    "get_directions": {"function": get_directions, "description": "Get directions between two locations", "parameters": {"origin": "starting location", "destination": "ending location", "mode": "driving/walking/transit/bicycling"}},
+    "get_places_nearby": {"function": get_places_nearby, "description": "Find nearby places (restaurants, cafes, etc.)", "parameters": {"location": "address or place name", "place_type": "restaurant/cafe/hospital/etc.", "radius": "search radius in meters"}},
+    "get_timezone": {"function": get_timezone, "description": "Get timezone for a location", "parameters": {"location": "place name or address", "lat": "latitude", "lon": "longitude"}},
+    
+    # Google Assistant
+    "google_assistant": {"function": control_device, "description": "Control smart home devices via Google Assistant (lights, switches, etc). Input: Full natural language command e.g. 'Turn on the bedroom lights'", "parameters": {"command": "text command"}},
 }

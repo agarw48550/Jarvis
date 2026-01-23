@@ -14,6 +14,7 @@ cerebras-cloud-sdk
 google-api-python-client
 google-auth-oauthlib
 google-auth-httplib2
+google-assistant-sdk[samples]
 edge-tts
 pyttsx3
 typing-extensions

@@ -55,20 +55,36 @@ class WakeWordListener:
             raise ValueError("PICOVOICE_ACCESS_KEY not found in .env")
 
         try:
-            if self.keyword_path:
-                print(f"🔄 [WAKEWORD] Creating Porcupine with custom path: {self.keyword_path}")
+            keyword_paths = []
+
+            # 1. Custom Wake Word
+            if self.keyword_path and os.path.exists(self.keyword_path):
+                keyword_paths.append(self.keyword_path)
+                print(f"🔄 [WAKEWORD] Added custom wake word: {os.path.basename(self.keyword_path)}")
+
+            # 2. Built-in 'Jarvis'
+            try:
+                jarvis_path = pvporcupine.KEYWORD_PATHS.get('jarvis')
+                if jarvis_path:
+                    keyword_paths.append(jarvis_path)
+                    print("🔄 [WAKEWORD] Added built-in wake word: 'Jarvis'")
+            except Exception as e:
+                print(f"⚠️ [WAKEWORD] Could not load built-in 'Jarvis': {e}")
+
+            if not keyword_paths:
+                # Fallback if nothing found
+                keywords_arg = ['jarvis']
+                print("⚠️ [WAKEWORD] No paths found, falling back to keywords=['jarvis']")
                 self.porcupine = pvporcupine.create(
-                    access_key=self.access_key,
-                    keyword_paths=[self.keyword_path],
-                    sensitivities=[self.sensitivity]
+                     access_key=self.access_key,
+                     keywords=keywords_arg,
+                     sensitivities=[self.sensitivity] * len(keywords_arg)
                 )
             else:
-                # Fallback to built-in 'jarvis' if custom file not found
-                print("⚠️ [WAKEWORD] No custom .ppn file found. Falling back to built-in 'jarvis'.")
                 self.porcupine = pvporcupine.create(
                     access_key=self.access_key,
-                    keywords=['jarvis'],
-                    sensitivities=[self.sensitivity]
+                    keyword_paths=keyword_paths,
+                    sensitivities=[self.sensitivity] * len(keyword_paths)
                 )
 
             # Try to pick a sensible default device if -1 fails or is generic

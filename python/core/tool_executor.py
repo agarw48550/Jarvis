@@ -58,7 +58,10 @@ def extract_and_execute_tools(response: str) -> Tuple[List[Tuple[str, Any]], str
     all_calls.extend(json_objects_found)
 
     # Process executions
-    for tool_call in all_calls:
+    # Process executions (Parallel)
+    import concurrent.futures
+    
+    def execute_single_tool(tool_call):
         try:
             tool_name = tool_call.get("tool")
             params = tool_call.get("params", {})
@@ -79,11 +82,18 @@ def extract_and_execute_tools(response: str) -> Tuple[List[Tuple[str, Any]], str
                 if len(result_str) > 10000:
                    result_str = result_str[:10000] + "... (truncated)"
                 
-                # Verify JSON serializability logic if needed, but for now just returning the string/obj
-                # The caller (orchestrator/main) should handle JSON serialization
-                results.append((tool_name, result_str))
+                return (tool_name, result_str)
         except Exception as e:
-            results.append((tool_call.get("tool", "unknown"), f"Error: {e}"))
+            return (tool_call.get("tool", "unknown"), f"Error: {e}")
+        return None
+
+    # Execute efficiently
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        future_to_tool = {executor.submit(execute_single_tool, tc): tc for tc in all_calls}
+        for future in concurrent.futures.as_completed(future_to_tool):
+            res = future.result()
+            if res:
+                results.append(res)
 
     # Clean the response text from tool markers
     clean = re.sub(pattern_code_blocks, '', response, flags=re.DOTALL)

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN"
+ "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.jarvis.menu</string>
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>/Users/ayaanagarwal/Documents/Important/Home/Projects/Jarvis V3/jarvis/python/venv/bin/python3</string>
+      <string>/Users/ayaanagarwal/Documents/Important/Home/Projects/Jarvis V3/jarvis/python/jarvis_menu.py</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/jarvis_menu.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/jarvis_menu.err.log</string>
+  </dict>
+</plist>

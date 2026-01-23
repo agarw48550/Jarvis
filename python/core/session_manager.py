@@ -1,4 +1,3 @@
-
 import asyncio
 import uuid
 import time
@@ -19,6 +18,7 @@ from core.memory import (
     set_preference
 )
 from tools.tool_registry import TOOLS
+from utils.volume_control import VolumeController
 
 # --- AUDIO HANDLER ---
 class UltraAudio:
@@ -148,6 +148,9 @@ class JarvisSession:
             "status": "STOPPED" # STOPPED, INITIALIZING, LISTENING, PROCESSING, SPEAKING
         }
         
+        # Volume Controller
+        self.volume_manager = VolumeController()
+
         # Callback for UI updates
         self.on_status_change = on_status_change
         
@@ -166,6 +169,20 @@ class JarvisSession:
 
     def _update_status(self, new_status, extra=None):
         self.state["status"] = new_status
+
+        # Handle volume ducking
+        if new_status == "SPEAKING":
+            self.volume_manager.duck_media(target_percent=10) # 10% volume
+        elif new_status in ["LISTENING", "PROCESSING", "STOPPED", "INITIALIZING"]:
+            # Maybe keep ducking during listening?
+            # User said: "decrease to 5% of the volume the AI Assistant is speaking at"
+            # It's better to duck during both speaking and listening so the AI can hear user.
+            # But user specifically said "When Bhuvi is speaking".
+            # Let's duck when speaking.
+            # And restore when done.
+            if new_status != "SPEAKING":
+                self.volume_manager.restore_media()
+
         if self.on_status_change:
             self.on_status_change(new_status, extra)
         else:

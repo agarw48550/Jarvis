@@ -1,4 +1,3 @@
-
 import rumps
 import os
 import sys
@@ -6,34 +5,40 @@ import threading
 from core.wakeword import WakeWordListener
 from core.session_manager import JarvisSession
 
+# New imports for macOS power notifications (optional)
+try:
+    import objc
+    from Foundation import NSObject
+    from AppKit import NSWorkspace, NSWorkspaceWillSleepNotification
+    _HAS_PYOBJC = True
+except Exception:
+    _HAS_PYOBJC = False
+
 # Ensure we are in the correct directory for relative imports if run directly
 script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(script_dir)
 
 class JarvisMenuApp(rumps.App):
     def __init__(self):
-        # Start with the Robot icon (OFF state)
-        super(JarvisMenuApp, self).__init__("🤖", icon=None)
-        
-        self.state = "OFF" # OFF, STANDBY, ACTIVE
-        
+        # Start in Standby (listening for wake word)
+        super(JarvisMenuApp, self).__init__("✦", icon=None)
+
+        self.state = "STANDBY" # STANDBY, ACTIVE
+
         # Menu Items
-        self.status_item = rumps.MenuItem("Status: Offline")
-        self.standby_item = rumps.MenuItem("Activate Standby Mode", callback=self.enter_standby)
+        self.status_item = rumps.MenuItem("Status: ✦ Waiting for Wake Word")
         self.wake_item = rumps.MenuItem("Force Wake Up Now", callback=self.manual_wake)
-        self.off_item = rumps.MenuItem("Turn Off Everything", callback=self.turn_off)
         self.auth_item = rumps.MenuItem("Configure Google Access", callback=self.check_auth)
-        
+        self.quit_item = rumps.MenuItem("Quit Jarvis", callback=self.quit_app)
+
         self.menu = [
             self.status_item,
             rumps.separator,
-            self.standby_item,
             self.wake_item,
-            self.off_item,
             rumps.separator,
             self.auth_item,
             rumps.separator,
-            "Quit"
+            self.quit_item,
         ]
         
         # Components
@@ -43,23 +48,62 @@ class JarvisMenuApp(rumps.App):
         # Update visibility initially
         self.update_menu_visibility()
 
+        # Register macOS power event handlers if PyObjC is available
+        if _HAS_PYOBJC:
+            try:
+                class _PowerObserver(NSObject):
+                    def init(self):
+                        self = objc.super(_PowerObserver, self).init()
+                        self.app_ref = None
+                        return self
+
+                    def setApp_(self, app):
+                        self.app_ref = app
+                        self.register_observers()
+
+                    def register_observers(self):
+                        nc = NSWorkspace.sharedWorkspace().notificationCenter()
+                        nc.addObserver_selector_name_object_(self, b'willSleep:', NSWorkspaceWillSleepNotification, None)
+                        try:
+                            from AppKit import NSWorkspaceDidWakeNotification
+                            nc.addObserver_selector_name_object_(self, b'didWake:', NSWorkspaceDidWakeNotification, None)
+                        except Exception:
+                            pass
+
+                    def willSleep_(self, notification):
+                        try:
+                            print('[POWER] System will sleep — pausing Jarvis...')
+                            # Just pause, don't exit
+                            if self.app_ref:
+                                self.app_ref.turn_off()
+                        except Exception as e:
+                            print(f'[POWER] Error handling willSleep: {e}')
+
+                    def didWake_(self, notification):
+                        try:
+                            print('[POWER] System did wake — resuming Jarvis standby...')
+                            if self.app_ref:
+                                # Re-initialize audio/wakeword
+                                self.app_ref.enter_standby()
+                        except Exception as e:
+                            print(f'[POWER] Error restarting standby: {e}')
+
+                self._power_observer = _PowerObserver.alloc().init()
+                self._power_observer.setApp_(self)
+            except Exception as e:
+                print(f"[POWER] Failed to register power observer: {e}")
+
+        # Always start in standby
+        self.enter_standby()
+
     def update_menu_visibility(self):
         # Manage which buttons show up based on state
-        if self.state == "OFF":
-            self.standby_item.set_callback(self.enter_standby)
-            self.wake_item.set_callback(self.manual_wake)
-            self.off_item.set_callback(None)
-            self.status_item.title = "Status: 🤖 Offline"
-        elif self.state == "STANDBY":
-            self.standby_item.set_callback(None)
-            self.wake_item.set_callback(self.manual_wake)
-            self.off_item.set_callback(self.turn_off)
+        if self.state == "STANDBY":
             self.status_item.title = "Status: ✦ Waiting for Wake Word"
+            self.title = "✦"
         elif self.state == "ACTIVE":
-            self.standby_item.set_callback(None)
-            self.wake_item.set_callback(None)
-            self.off_item.set_callback(self.turn_off)
             self.status_item.title = "Status: ◉ AI Session Active"
+            self.title = "◉"
 
     def set_title_limited(self, symbol):
         # Update the menu bar title with JUST the symbol
@@ -79,7 +123,6 @@ class JarvisMenuApp(rumps.App):
                 self.wakeword = WakeWordListener(callback=self.on_wakeword_detected)
             except Exception as e:
                 rumps.alert("Wake Word Error", str(e))
-                self.turn_off()
                 return
         
         if not self.wakeword.running:
@@ -93,9 +136,9 @@ class JarvisMenuApp(rumps.App):
         self.start_session()
 
     def turn_off(self, _=None):
-        print("[MENU] Turning Off...")
-        self.state = "OFF"
-        self.set_title_limited("🤖")
+        print("[MENU] Stopping components...")
+        self.state = "STANDBY"
+        self.set_title_limited("✦")
         self.update_menu_visibility()
         
         # Stop everything
@@ -103,6 +146,13 @@ class JarvisMenuApp(rumps.App):
             self.wakeword.stop()
         
         self.session.stop()
+
+    def quit_app(self, _=None):
+        print("[MENU] Quit requested — stopping and exiting")
+        try:
+            self.turn_off()
+        finally:
+            rumps.quit_application()
 
     def start_session(self):
         self.state = "ACTIVE"
@@ -114,7 +164,7 @@ class JarvisMenuApp(rumps.App):
             self.session.start()
         except Exception as e:
             print(f"[MENU] Fatal error starting session: {e}")
-            self.turn_off()
+            self.enter_standby()
 
     # --- CALLBACKS ---
 
@@ -135,9 +185,9 @@ class JarvisMenuApp(rumps.App):
         print(f"[MENU] AI Status: {status}")
         
         if status == "STOPPED":
-            # Go back to STANDBY (waiting for next wake) instead of OFF
+            # Always return to standby
             self.enter_standby()
-            
+
         elif status == "LISTENING":
             self.set_title_limited("◉")
         elif status == "SPEAKING":
