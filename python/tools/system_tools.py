@@ -212,3 +212,35 @@ def control_media(action: str) -> str:
         pass
 
     return "No active media players found (checked Music and Spotify)."
+
+def list_processes() -> str:
+    """List top 5 processes by CPU usage"""
+    try:
+        # ps -A -o %cpu,comm | sort -nr | head -n 5
+        cmd = ["ps", "-A", "-o", "%cpu,comm"]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        lines = result.stdout.strip().split('\n')
+        
+        # Sort by CPU usage (skipping header)
+        procs = []
+        for line in lines[1:]:
+            parts = line.strip().split(maxsplit=1)
+            if len(parts) == 2:
+                try:
+                    cpu = float(parts[0])
+                    name = parts[1]
+                    # Filter out system kernel tasks if desired, but keeping all is fine
+                    procs.append((cpu, name))
+                except ValueError:
+                    continue
+                    
+        procs.sort(key=lambda x: x[0], reverse=True)
+        top_5 = procs[:5]
+        
+        output = ["Top CPU Consumer Processes:"]
+        for cpu, name in top_5:
+            output.append(f"- {name}: {cpu}%")
+            
+        return "\n".join(output)
+    except Exception as e:
+        return f"Error listing processes: {e}"

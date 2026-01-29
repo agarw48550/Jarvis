@@ -1,9 +1,38 @@
-import rumps
 import os
 import sys
 import threading
-from core.wakeword import WakeWordListener
-from core.session_manager import JarvisSession
+
+script_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, script_dir)
+
+# #region agent log
+def _agent_log(*a, **k):
+    try:
+        from debug_log import _agent_log as _log
+        _log(*a, **k)
+    except Exception:
+        pass
+try:
+    from debug_log import _agent_log as _agent_log_impl
+    _agent_log = _agent_log_impl
+    _agent_log("jarvis_menu.py:start", "script_start", hypothesis_id="H1")
+except Exception:
+    pass
+# #endregion
+
+import rumps
+try:
+    from core.wakeword import WakeWordListener
+    _agent_log("jarvis_menu.py:imports", "wakeword_ok", hypothesis_id="H1")
+except Exception as e:
+    _agent_log("jarvis_menu.py:imports", "wakeword_import_fail", data={"error": str(e)}, hypothesis_id="H2")
+    raise
+try:
+    from core.session_manager import JarvisSession
+    _agent_log("jarvis_menu.py:imports", "session_manager_ok", hypothesis_id="H1")
+except Exception as e:
+    _agent_log("jarvis_menu.py:imports", "session_manager_import_fail", data={"error": str(e)}, hypothesis_id="H1")
+    raise
 
 # New imports for macOS power notifications (optional)
 try:
@@ -13,10 +42,6 @@ try:
     _HAS_PYOBJC = True
 except Exception:
     _HAS_PYOBJC = False
-
-# Ensure we are in the correct directory for relative imports if run directly
-script_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(script_dir)
 
 class JarvisMenuApp(rumps.App):
     def __init__(self):
@@ -47,6 +72,10 @@ class JarvisMenuApp(rumps.App):
         
         # Update visibility initially
         self.update_menu_visibility()
+
+        # Health Check Timer (Run every 5 seconds)
+        self.health_timer = rumps.Timer(self.health_check, 5)
+        self.health_timer.start()
 
         # Register macOS power event handlers if PyObjC is available
         if _HAS_PYOBJC:
@@ -112,6 +141,9 @@ class JarvisMenuApp(rumps.App):
     # --- STATE ACTIONS ---
     
     def enter_standby(self, _=None):
+        # #region agent log
+        _agent_log("jarvis_menu.py:enter_standby", "enter", hypothesis_id="H2")
+        # #endregion
         print("[MENU] Entering Standby Mode...")
         self.state = "STANDBY"
         self.set_title_limited("✦")
@@ -121,12 +153,19 @@ class JarvisMenuApp(rumps.App):
         if not self.wakeword:
             try:
                 self.wakeword = WakeWordListener(callback=self.on_wakeword_detected)
+                _agent_log("jarvis_menu.py:enter_standby", "wakeword_init_ok", hypothesis_id="H2")
             except Exception as e:
-                rumps.alert("Wake Word Error", str(e))
+                _agent_log("jarvis_menu.py:enter_standby", "wakeword_init_fail", data={"error": str(e)}, hypothesis_id="H2")
+                print(f"⚠️ Wake Word Init Error: {e}")
                 return
         
         if not self.wakeword.running:
-            self.wakeword.start()
+            try:
+                self.wakeword.start()
+                _agent_log("jarvis_menu.py:enter_standby", "wakeword_start_ok", hypothesis_id="H2")
+            except Exception as e:
+                _agent_log("jarvis_menu.py:enter_standby", "wakeword_start_fail", data={"error": str(e)}, hypothesis_id="H2")
+                print(f"⚠️ Wake Word Start Error: {e}")
 
     def manual_wake(self, _=None):
         print("[MENU] Manual Wake Up Triggered...")
@@ -155,6 +194,9 @@ class JarvisMenuApp(rumps.App):
             rumps.quit_application()
 
     def start_session(self):
+        # #region agent log
+        _agent_log("jarvis_menu.py:start_session", "enter", hypothesis_id="H3")
+        # #endregion
         self.state = "ACTIVE"
         self.set_title_limited("◉")
         self.update_menu_visibility()
@@ -162,7 +204,9 @@ class JarvisMenuApp(rumps.App):
         os.system("afplay /System/Library/Sounds/Tink.aiff")
         try:
             self.session.start()
+            _agent_log("jarvis_menu.py:start_session", "session_start_ok", hypothesis_id="H3")
         except Exception as e:
+            _agent_log("jarvis_menu.py:start_session", "session_start_fail", data={"error": str(e)}, hypothesis_id="H3")
             print(f"[MENU] Fatal error starting session: {e}")
             self.enter_standby()
 
@@ -171,6 +215,7 @@ class JarvisMenuApp(rumps.App):
     def on_wakeword_detected(self):
         """Called when Porcupine detects the keyword"""
         def handle_detection():
+            _agent_log("jarvis_menu.py:on_wakeword", "detected", hypothesis_id="H2")
             print("⚡ Wake word triggered! Transitioning to Active AI...")
             if self.wakeword:
                 self.wakeword.stop()
@@ -204,6 +249,26 @@ class JarvisMenuApp(rumps.App):
         do_script = f'tell application "Terminal" to do script "cd {shlex.quote(script_dir)} && ./venv/bin/python3 {shlex.quote(script_path)}"'
         subprocess.run(["osascript", "-e", activate_script, "-e", do_script], check=False)
         rumps.notification("Jarvis Setup", "Opening Terminal", "Please follow instructions to authorize Google.")
+
+    def health_check(self, _):
+        """Periodically checks if the system is in a valid state and recovers if not."""
+        # Case 1: Active, but session dead
+        if self.state == "ACTIVE":
+            if not self.session.thread or not self.session.thread.is_alive():
+                print("⚠️ [HEALTH] Session thread died unexpectedly. Resetting to Standby.")
+                self.enter_standby()
+
+        # Case 2: Standby, but wake word not running
+        elif self.state == "STANDBY":
+            if not self.wakeword:
+                 print("⚠️ [HEALTH] Wakeword missing. Re-initializing...")
+                 self.enter_standby()
+            elif not self.wakeword.running:
+                 print("⚠️ [HEALTH] Wakeword stopped unexpectedly. Restarting...")
+                 try:
+                     self.wakeword.start()
+                 except Exception as e:
+                     print(f"⚠️ [HEALTH] Failed to restart wakeword: {e}")
 
 if __name__ == "__main__":
     app = JarvisMenuApp()

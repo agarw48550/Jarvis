@@ -25,6 +25,18 @@ def get_weather(city: str = "Singapore") -> str:
     except Exception:
         return f"Couldn't get weather for {city}."
 
+def get_weather_legacy(city: str = "Singapore") -> str:
+    """Fallback weather using simple text format"""
+    try:
+        import urllib.parse
+        import requests
+        # format=3: city: +29C rain
+        url = f"https://wttr.in/{urllib.parse.quote(city)}?format=3"
+        response = requests.get(url, timeout=5)
+        return response.text.strip()
+    except Exception:
+        return f"Couldn't get weather for {city}."
+
 
 def calculate(expression: str) -> str:
     try:

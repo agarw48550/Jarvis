@@ -373,6 +373,37 @@ def search_facts(query: str, limit: int = 5) -> List[Dict]:
         print(f"⚠️ Fact search error: {e}")
         return []
 
+def search_conversations(query: str, limit: int = 5) -> str:
+    """
+    Search past conversations for a query and return a summary.
+    """
+    init_database()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # Simple keyword search for now (FTS would be better but keeping it simple)
+    # Search in messages
+    cursor.execute("""
+        SELECT m.content, m.role, m.timestamp 
+        FROM messages m
+        WHERE m.content LIKE ? 
+        ORDER BY m.timestamp DESC 
+        LIMIT ?
+    """, (f"%{query}%", limit * 4)) # Get more results to summarize
+    
+    rows = cursor.fetchall()
+    conn.close()
+    
+    if not rows:
+        return f"I couldn't find any past conversations matching '{query}'."
+        
+    # Format results
+    results = []
+    for content, role, timestamp in rows:
+        results.append(f"[{timestamp}] {role}: {content}")
+        
+    return "Found these relevant snippets from past conversations:\n" + "\n".join(results)
+
 
 def clear_memory():
     """Clear all memory (conversations and facts)"""

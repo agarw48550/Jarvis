@@ -48,7 +48,7 @@ API_KEYS = APIKeys.from_env()
 # ============== Model Configuration ==============
 @dataclass
 class ModelConfig:
-    # Gemini Live (Voice) - Force latest stable preview for audio
+    # Gemini Live (Voice)
     gemini_live_model: str = "models/gemini-2.5-flash-native-audio-preview-12-2025"
     gemini_live_api_version: str = "v1beta"
     

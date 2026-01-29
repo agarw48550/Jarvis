@@ -74,3 +74,4 @@ Preferences are stored in the `preferences` table in the SQLite database (`data/
 The system prompt is dynamically updated based on your preferences, ensuring JARVIS adapts its personality and communication style to match yours.
 
 
+

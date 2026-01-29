@@ -1,11 +1,23 @@
 #!/usr/bin/env python3
 """Central tool registry"""
 
-from tools.system_tools import open_app, set_volume, get_battery, take_screenshot, set_brightness, control_media
+# #region agent log
+try:
+    from debug_log import _agent_log
+    _agent_log("tool_registry.py:top", "import_start", hypothesis_id="H1")
+except Exception:
+    pass
+# #endregion
+
+from tools.system_tools import open_app, set_volume, get_battery, take_screenshot, set_brightness, control_media, list_processes
 from tools.customization_tools import update_ai_behavior
 from tools.productivity_tools import get_time, set_timer, add_reminder, get_reminders, clear_reminders
-from core.memory import add_fact
-from tools.information_tools import get_weather, calculate
+from core.memory import (
+    add_fact,
+    search_facts,
+    search_conversations
+)
+from tools.information_tools import get_weather, get_weather_legacy, calculate
 from tools.control_tools import control_music, pause_listening, exit_jarvis, stop_speaking
 from tools.communication_tools import send_email, read_emails, get_calendar_events, create_calendar_event
 from interfaces.voice.tts_handler import set_voice, list_voices
@@ -35,6 +47,11 @@ from search_engine import search_news, search_web
 
 # Initialize LLMs
 init_external_llms()
+try:
+    from debug_log import _agent_log
+    _agent_log("tool_registry.py:init", "import_done", hypothesis_id="H1")
+except Exception:
+    pass
 
 # Tool registry
 TOOLS = {
@@ -79,6 +96,8 @@ TOOLS = {
     "ask_groq": {"function": ask_groq, "description": "Ask a question to Llama 3 on Groq (ultra-fast).", "parameters": {"prompt": "question", "model": "optional model ID"}},
     "ask_cerebras": {"function": ask_cerebras, "description": "Ask a question to Llama on Cerebras (ultra-fast).", "parameters": {"prompt": "question", "model": "optional model ID"}},
     "update_ai_behavior": {"function": update_ai_behavior, "description": "Update AI personality or behavior style", "parameters": {"style_key": "voice_style/humor_level/formality", "value": "description of new style"}},
+    "list_processes": {"function": list_processes, "description": "List top 5 CPU consuming applications/processes. Use when user asks 'why is my mac slow' or 'what is using cpu'.", "parameters": {}},
+    "get_weather_legacy": {"function": get_weather_legacy, "description": "Get weather in simple text format (backup).", "parameters": {"city": "city name"}},
     
     # Google Cloud API Tools
     "list_drive_files": {"function": list_drive_files, "description": "List files from Google Drive", "parameters": {"query": "optional search query", "max_results": "number of files"}},
@@ -92,4 +111,14 @@ TOOLS = {
     
     # Google Assistant
     "google_assistant": {"function": control_device, "description": "Control smart home devices via Google Assistant (lights, switches, etc). Input: Full natural language command e.g. 'Turn on the bedroom lights'", "parameters": {"command": "text command"}},
+    
+    # Memory
+    "recall_conversation": {
+        "function": search_conversations,
+        "description": "Search for past conversations or memories about a specific topic. Use this when the user asks 'what did we talk about regarding X?' or 'do you remember X?'.",
+        "parameters": {
+            "query": "The search query or keyword to look for in past conversations.",
+            "limit": "Number of results to return (default 5, max 20)."
+        }
+    }
 }
