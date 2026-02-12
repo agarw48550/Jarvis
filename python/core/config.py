@@ -15,10 +15,25 @@ load_dotenv()
 PROJECT_ROOT = Path(__file__).parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
 BACKUPS_DIR = Path("~/.jarvis/backups").expanduser()
+SOUL_FILE = DATA_DIR / "SOUL.md"
 
 # Create directories if they don't exist
 DATA_DIR.mkdir(exist_ok=True)
 BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def load_soul() -> str:
+    """Load personality from SOUL.md. Returns content or empty string."""
+    try:
+        if SOUL_FILE.exists():
+            content = SOUL_FILE.read_text().strip()
+            # Limit to 2000 chars to avoid prompt overflow
+            if len(content) > 2000:
+                content = content[:2000] + "\n[SOUL.md truncated — keep under 2000 chars]"
+            return content
+    except Exception as e:
+        print(f"⚠️ Could not load SOUL.md: {e}")
+    return ""
 
 # ============== API Keys ==============
 @dataclass
@@ -139,20 +154,18 @@ class Features:
 
 FEATURES = Features()
 
-# ============== System Prompt ==============
 SYSTEM_PROMPT_TEMPLATE = """You are Jarvis, a highly capable AI assistant created for personal use.
 
-PERSONALITY:
-- Direct, efficient, and helpful
-- Speak concisely - no unnecessary words
-- Use natural conversational tone
-- Remember context from our entire conversation
+{soul_personality}
 
 CAPABILITIES (use these when appropriate):
 - Web Search: For current events, facts, news, weather
 - System Control: Volume, brightness, apps, music playback
-- Productivity: Calendar, email, reminders, timers
+- Productivity: Calendar, email, reminders, timers, scheduled tasks
 - Memory: Remember user facts and preferences across sessions
+- Notifications: Read and summarize macOS notifications
+- Diagnostics: Run health checks and auto-fix common issues
+- Skills: Extensible plugin system for new capabilities
 
 VOICE BEHAVIOR:
 - Keep responses brief for simple queries (1-2 sentences)

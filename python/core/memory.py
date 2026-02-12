@@ -118,6 +118,36 @@ def init_database():
     conn.close()
 
 
+def update_conversation_summary(conversation_id: int, summary: str):
+    """Update the summary of a conversation"""
+    init_database()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE conversations 
+        SET summary = ? 
+        WHERE id = ?
+    """, (summary, conversation_id))
+    conn.commit()
+    conn.close()
+
+
+def get_last_session_summary() -> Optional[str]:
+    """Get the summary of the most recent completed conversation"""
+    init_database()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT summary FROM conversations 
+        WHERE summary IS NOT NULL 
+        ORDER BY ended_at DESC 
+        LIMIT 1
+    """)
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
 def get_current_conversation_id() -> int:
     """Get or create current conversation ID"""
     conn = sqlite3.connect(DB_PATH)
@@ -142,6 +172,19 @@ def get_current_conversation_id() -> int:
     conv_id = cursor.lastrowid
     conn.close()
     return conv_id
+
+
+def end_conversation(conversation_id: int):
+    """Mark a conversation as ended"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE conversations 
+        SET ended_at = CURRENT_TIMESTAMP 
+        WHERE id = ?
+    """, (conversation_id,))
+    conn.commit()
+    conn.close()
 
 
 def text_to_embedding(text: str) -> Optional[bytes]:
@@ -301,6 +344,63 @@ def add_fact(fact: str, category: str = "general") -> bool:
     conn.close()
     print(f"💾 Saved to memory: {fact}")
     return True
+
+
+def delete_fact(fact_text: str) -> bool:
+    """Delete a fact from memory based on its text content"""
+    init_database()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # Try case-insensitive exact match first
+    cursor.execute("DELETE FROM facts WHERE LOWER(fact) = LOWER(?)", (fact_text,))
+    if cursor.rowcount > 0:
+        conn.commit()
+        conn.close()
+        print(f"🗑️ Fact deleted: {fact_text}")
+        return True
+    
+    # Try LIKE match if exact fails
+    cursor.execute("DELETE FROM facts WHERE fact LIKE ?", (f"%{fact_text}%",))
+    if cursor.rowcount > 0:
+        conn.commit()
+        conn.close()
+        print(f"🗑️ Fact(s) deleted matching: {fact_text}")
+        return True
+        
+    conn.close()
+    return False
+
+
+def search_memory(query: str, limit: int = 5) -> str:
+    """
+    Unified search across facts and conversation history.
+    """
+    init_database()
+    
+    # 1. Search Facts
+    facts = search_facts(query, limit=3)
+    fact_parts = []
+    if facts:
+        fact_parts = [f"- [Fact] {f['fact']}" for f in facts]
+        
+    # 2. Search History
+    history_raw = search_conversations(query, limit=3)
+    
+    # Combine results
+    results = []
+    if fact_parts:
+        results.append("Relevant Knowledge Facts:\n" + "\n".join(fact_parts))
+    
+    if "Found these relevant snippets" in history_raw:
+        results.append("\nRelevant History Snippets:\n" + history_raw.replace("Found these relevant snippets from past conversations:\n", ""))
+    elif "couldn't find any past conversations" not in history_raw:
+        results.append("\nRelevant History:\n" + history_raw)
+        
+    if not results:
+        return f"I couldn't find any specific facts or conversation history related to '{query}'."
+        
+    return "\n".join(results)
 
 
 def get_all_facts() -> List[Dict]:

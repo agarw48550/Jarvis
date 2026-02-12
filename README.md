@@ -132,17 +132,32 @@
 - Node.js 18+
 - Sox: `brew install sox portaudio`
 
-### Installation
+### Installation (The Easy Way)
 
 1. **Clone the repository**
 ```bash
 git clone https://github.com/agarw48550/Jarvis.git
-cd "Jarvis/jarvis"
+cd "Jarvis"
 ```
 
-2. **Set up Python backend**
+2. **Run the Installer**
+   This script sets up Python, installs dependencies, and runs the configuration wizard.
 ```bash
-cd python
+./install.sh
+```
+
+3. **Start Jarvis**
+```bash
+cd jarvis
+npm run start
+```
+
+### Manual Installation (Advanced)
+If you prefer to set things up manually:
+
+1. **Set up Python backend**
+```bash
+cd jarvis/python
 python3.11 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt

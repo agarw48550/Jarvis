@@ -201,7 +201,6 @@ class JarvisMenuApp(rumps.App):
         self.set_title_limited("◉")
         self.update_menu_visibility()
         
-        os.system("afplay /System/Library/Sounds/Tink.aiff")
         try:
             self.session.start()
             _agent_log("jarvis_menu.py:start_session", "session_start_ok", hypothesis_id="H3")
@@ -220,8 +219,10 @@ class JarvisMenuApp(rumps.App):
             if self.wakeword:
                 self.wakeword.stop()
             
-            import time
-            time.sleep(0.3) 
+            # Reduce delay and run audio in background to speed up transition
+            import subprocess
+            subprocess.Popen(["afplay", "/System/Library/Sounds/Tink.aiff"])
+            
             self.start_session()
             
         threading.Thread(target=handle_detection, daemon=True).start()
@@ -254,7 +255,11 @@ class JarvisMenuApp(rumps.App):
         """Periodically checks if the system is in a valid state and recovers if not."""
         # Case 1: Active, but session dead
         if self.state == "ACTIVE":
-            if not self.session.thread or not self.session.thread.is_alive():
+            # Give session thread time to start (avoid race condition)
+            if self.session.thread is None:
+                # Thread not created yet - might still be initializing
+                return
+            if not self.session.thread.is_alive():
                 print("⚠️ [HEALTH] Session thread died unexpectedly. Resetting to Standby.")
                 self.enter_standby()
 

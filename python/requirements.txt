@@ -21,3 +21,5 @@ typing-extensions
 rumps
 pvporcupine
 pvrecorder
+psutil
+PyYAML

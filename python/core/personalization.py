@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import traceback
-from core.memory import init_database, add_fact, get_all_facts
+from core.memory import init_database, add_fact, get_all_facts, update_conversation_summary, get_current_conversation_id
 from tools.external_llms import ask_groq, ask_cerebras
 
 # Try to use Cerebras first (often faster/higher limits), fallback to Groq
@@ -20,15 +20,18 @@ class PersonalizationEngine:
         """
         Analyzes a conversation transcript to extract facts and preferences.
         """
-        if not conversation_text or len(conversation_text) < 50:
-            print("Personalization: Transcript too short to learn from.")
+        if not conversation_text or len(conversation_text) < 20:
             return
 
         prompt = f"""
-        Analyze the following conversation between a User and Jarvis.
-        Extract any new, permanent facts about the user (name, location, preferences, hobbies, relationships).
-        Ignore trivial chatter ("Hello", "How are you").
-        Ignore facts I likely already know unless changed.
+        Act as a proactive personal observer. Analyze the following conversation between a User and Jarvis.
+        Your goal is to extract SUBTLE personality traits, preferences, habits, life updates, and recurring themes that reveal who the user is.
+        
+        DON'T just look for explicit commands like "remember this". Look for clues in their speech:
+        - Preferences: (e.g., "I hate long emails", "I love dark mode", "I usually drink coffee in the morning")
+        - Habits/Routine: (e.g., "I'm going to the gym now", "I have a meeting every Tuesday")
+        - Life Context: (e.g., "My daughter is starting school", "I'm working on a project about RAG")
+        - Emotional Tone: (e.g., "User sounds stressed about work", "User is very tech-savvy")
         
         Transcript:
         {conversation_text}
@@ -36,10 +39,11 @@ class PersonalizationEngine:
         Output strictly in JSON format:
         {{
             "facts": [
-                {{"fact": "User is learning Python", "category": "skills"}},
-                {{"fact": "User lives in Singapore", "category": "location"}}
+                {{"fact": "User prefers concise technical explanations", "category": "preferences"}},
+                {{"fact": "User has a recurring weekly meeting on Tuesdays", "category": "routine"}},
+                {{"fact": "User is currently developing a RAG-based memory system", "category": "projects"}}
             ],
-            "summary": "Brief 1-sentence summary of conversation"
+            "summary": "1-2 sentence summary of the current state of conversation for immediate session resumption"
         }}
         If nothing worth learning, return facts: [].
         """
@@ -63,10 +67,15 @@ class PersonalizationEngine:
             # Save facts
             for item in facts:
                 if isinstance(item, dict) and "fact" in item:
-                    add_fact(item["fact"], item.get("category", "general"))
+                    fact_text = item["fact"]
+                    if add_fact(fact_text, item.get("category", "general")):
+                        print(f"🧠 [PROACTIVE MEMORY] Jarvis learned: \"{fact_text}\"")
                     
-            # Ideally we'd also update the conversation record with the summary via SQL
-            # But 'messages' table is separate. We'll leave it simple for now.
+            # Save summary to conversation record
+            if summary:
+                conv_id = get_current_conversation_id()
+                update_conversation_summary(conv_id, summary)
+                print(f"📝 Session summary saved: {summary}")
             
         except Exception as e:
             print(f"Personalization Failed: {e}")

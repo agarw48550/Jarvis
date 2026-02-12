@@ -17,6 +17,7 @@ sleep 1
 
 echo "🚀 Starting Jarvis..."
 # Run in background
-nohup "$PYTHON_EXEC" "$SCRIPT_NAME" > /dev/null 2>&1 &
+nohup "$PYTHON_EXEC" -u "$SCRIPT_NAME" > jarvis_debug.log 2>&1 &
+echo "📋 Logs are being written to $PROJECT_DIR/jarvis_debug.log"
 
 echo "✅ Jarvis restarted successfully!"

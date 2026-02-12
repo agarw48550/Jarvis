@@ -15,7 +15,9 @@ from tools.productivity_tools import get_time, set_timer, add_reminder, get_remi
 from core.memory import (
     add_fact,
     search_facts,
-    search_conversations
+    search_conversations,
+    delete_fact,
+    search_memory
 )
 from tools.information_tools import get_weather, get_weather_legacy, calculate
 from tools.control_tools import control_music, pause_listening, exit_jarvis, stop_speaking
@@ -112,13 +114,78 @@ TOOLS = {
     # Google Assistant
     "google_assistant": {"function": control_device, "description": "Control smart home devices via Google Assistant (lights, switches, etc). Input: Full natural language command e.g. 'Turn on the bedroom lights'", "parameters": {"command": "text command"}},
     
-    # Memory
-    "recall_conversation": {
-        "function": search_conversations,
-        "description": "Search for past conversations or memories about a specific topic. Use this when the user asks 'what did we talk about regarding X?' or 'do you remember X?'.",
+    "delete_fact": {"function": delete_fact, "description": "Delete a fact from your memory if it is wrong or outdated.", "parameters": {"fact_text": "the exact fact or partial text to forget"}},
+    "search_memory": {
+        "function": search_memory,
+        "description": "Search ALL memories, including both learned facts and your entire history of conversations from weeks ago. Use this for 'do you remember?' or 'what do you know about?' queries.",
         "parameters": {
-            "query": "The search query or keyword to look for in past conversations.",
-            "limit": "Number of results to return (default 5, max 20)."
+            "query": "The search query or keyword to look for.",
+            "limit": "Number of results to return (default 5)."
         }
-    }
+    },
+
+    # Notifications
+    "get_notifications": {"function": None, "description": "Get recent macOS notifications", "parameters": {"count": "number of notifications (default 10)"}},
+    "summarize_notifications": {"function": None, "description": "Summarize recent notifications grouped by app", "parameters": {}},
+    "get_notification_count": {"function": None, "description": "Get count of recent notifications", "parameters": {}},
+
+    # Scheduler
+    "schedule_task": {"function": None, "description": "Schedule a reminder or recurring task. Time accepts: 'in 5 minutes', 'at 3:00 PM', 'tomorrow at 9:00 AM'", "parameters": {"description": "what to remind about", "time_spec": "when (e.g. 'in 5 minutes', 'at 3:00 PM')", "recurrence": "optional: daily/hourly/weekly"}},
+    "list_scheduled_tasks": {"function": None, "description": "List all scheduled tasks and reminders", "parameters": {}},
+    "cancel_scheduled_task": {"function": None, "description": "Cancel a scheduled task by its ID", "parameters": {"task_id": "ID of the task to cancel"}},
+
+    # Diagnostics
+    "run_health_check": {"function": None, "description": "Run a health check on all Jarvis subsystems (API keys, audio, database, network)", "parameters": {}},
+    "get_system_status": {"function": None, "description": "Get CPU, RAM, disk, battery, and uptime status", "parameters": {}},
+    "fix_common_issues": {"function": None, "description": "Automatically fix common Jarvis issues (reset audio, re-init database, clear temp files)", "parameters": {}},
+
+    # Skills
+    "list_skills": {"function": None, "description": "List all installed Jarvis skills/plugins", "parameters": {}},
+    "enable_skill": {"function": None, "description": "Enable a Jarvis skill plugin", "parameters": {"skill_name": "name of skill to enable"}},
+    "disable_skill": {"function": None, "description": "Disable a Jarvis skill plugin", "parameters": {"skill_name": "name of skill to disable"}},
 }
+
+# --- Late-bind new tool functions (import after TOOLS dict is created to avoid circular imports) ---
+def _register_new_tools():
+    """Register functions for newly added tools."""
+    try:
+        from tools.notification_tools import get_recent_notifications, summarize_notifications, get_notification_count
+        TOOLS["get_notifications"]["function"] = get_recent_notifications
+        TOOLS["summarize_notifications"]["function"] = summarize_notifications
+        TOOLS["get_notification_count"]["function"] = get_notification_count
+    except Exception as e:
+        print(f"⚠️ Notification tools not loaded: {e}")
+
+    try:
+        from tools.scheduler_tools import schedule_task, list_scheduled_tasks, cancel_scheduled_task
+        TOOLS["schedule_task"]["function"] = schedule_task
+        TOOLS["list_scheduled_tasks"]["function"] = list_scheduled_tasks
+        TOOLS["cancel_scheduled_task"]["function"] = cancel_scheduled_task
+    except Exception as e:
+        print(f"⚠️ Scheduler tools not loaded: {e}")
+
+    try:
+        from tools.diagnostic_tools import run_health_check, get_system_status, fix_common_issues
+        TOOLS["run_health_check"]["function"] = run_health_check
+        TOOLS["get_system_status"]["function"] = get_system_status
+        TOOLS["fix_common_issues"]["function"] = fix_common_issues
+    except Exception as e:
+        print(f"⚠️ Diagnostic tools not loaded: {e}")
+
+    try:
+        from skills.skill_loader import list_skills, enable_skill, disable_skill, get_skill_loader
+        TOOLS["list_skills"]["function"] = list_skills
+        TOOLS["enable_skill"]["function"] = enable_skill
+        TOOLS["disable_skill"]["function"] = disable_skill
+
+        # Auto-register skill-provided tools
+        loader = get_skill_loader()
+        for tool_name, tool_info in loader.get_enabled_tools().items():
+            if tool_name not in TOOLS:
+                TOOLS[tool_name] = tool_info
+                print(f"🧩 Registered skill tool: {tool_name}")
+    except Exception as e:
+        print(f"⚠️ Skills not loaded: {e}")
+
+_register_new_tools()
+

@@ -16,7 +16,7 @@
     <true/>
 
     <key>KeepAlive</key>
-    <true/>
+    <false/>
 
     <key>LimitLoadToSessionType</key>
     <string>Aqua</string>

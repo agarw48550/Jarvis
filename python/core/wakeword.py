@@ -136,18 +136,87 @@ class WakeWordListener:
             self.porcupine = None
 
     def _listen_loop(self):
-        try:
-            self.recorder.start()
-            while self.running:
-                pcm = self.recorder.read()
-                result = self.porcupine.process(pcm)
-                
-                if result >= 0:
-                    print("⚡ [WAKEWORD] Detected!")
-                    if self.callback:
-                        self.callback()
-                        
-        except Exception as e:
-            if self.running:
-                print(f"❌ [WAKEWORD] Error in loop: {e}")
+        MAX_RETRIES = 5
+        retry_count = 0
+        backoff = 2
 
+        while self.running:
+            try:
+                if not self.recorder or not self.porcupine:
+                    # Re-initialize on retry
+                    self.cleanup()
+                    self._reinit_engine()
+
+                self.recorder.start()
+                retry_count = 0  # Reset on successful start
+                backoff = 2
+
+                while self.running:
+                    pcm = self.recorder.read()
+                    result = self.porcupine.process(pcm)
+
+                    if result >= 0:
+                        print("⚡ [WAKEWORD] Detected!")
+                        if self.callback:
+                            self.callback()
+
+            except Exception as e:
+                if not self.running:
+                    break
+                retry_count += 1
+                print(f"❌ [WAKEWORD] Error in loop (attempt {retry_count}/{MAX_RETRIES}): {e}")
+
+                if retry_count >= MAX_RETRIES:
+                    print("❌ [WAKEWORD] Max retries exceeded. Stopping wake word listener.")
+                    self.running = False
+                    self.cleanup()
+                    break
+
+                # Cleanup before retry
+                self.cleanup()
+
+                import time
+                sleep_time = min(backoff, 16)
+                print(f"🔄 [WAKEWORD] Retrying in {sleep_time}s...")
+                time.sleep(sleep_time)
+                backoff *= 2
+
+    def _reinit_engine(self):
+        """Re-initialize Porcupine and recorder for retry."""
+        keyword_paths = []
+
+        if self.keyword_path and os.path.exists(self.keyword_path):
+            keyword_paths.append(self.keyword_path)
+
+        try:
+            jarvis_path = pvporcupine.KEYWORD_PATHS.get('jarvis')
+            if jarvis_path:
+                keyword_paths.append(jarvis_path)
+        except Exception:
+            pass
+
+        if not keyword_paths:
+            self.porcupine = pvporcupine.create(
+                access_key=self.access_key,
+                keywords=['jarvis'],
+                sensitivities=[self.sensitivity]
+            )
+        else:
+            self.porcupine = pvporcupine.create(
+                access_key=self.access_key,
+                keyword_paths=keyword_paths,
+                sensitivities=[self.sensitivity] * len(keyword_paths)
+            )
+
+        devices = pvrecorder.PvRecorder.get_available_devices()
+        device_index = -1
+        for i, d in enumerate(devices):
+            if "MacBook Air Microphone" in d:
+                device_index = i
+                break
+
+        self.recorder = pvrecorder.PvRecorder(
+            device_index=device_index,
+            frame_length=self.porcupine.frame_length
+        )
+        print("🔄 [WAKEWORD] Re-initialized engine successfully.")

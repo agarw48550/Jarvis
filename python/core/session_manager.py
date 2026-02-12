@@ -28,13 +28,17 @@ import numpy as np
 from google import genai
 from google.genai import types
 
-from core.config import API_KEYS, MODELS, AUDIO, SYSTEM_PROMPT_TEMPLATE
+from core.config import API_KEYS, MODELS, AUDIO, SYSTEM_PROMPT_TEMPLATE, load_soul
 from core.memory import (
     init_database, 
     get_facts_for_prompt, 
     get_preferences_for_prompt,
     get_preference,
-    set_preference
+    set_preference,
+    add_message,
+    get_last_session_summary,
+    end_conversation,
+    get_current_conversation_id
 )
 from core.personalization import personalization
 from tools.tool_registry import TOOLS
@@ -43,8 +47,12 @@ from utils.volume_control import VolumeController
 # --- AUDIO HANDLER ---
 class UltraAudio:
     def __init__(self, send_rate=16000, recv_rate=24000, chunk_size=512):
+        import threading
         self.pya = pyaudio.PyAudio()
         self.chunk_size = chunk_size
+        # Separate locks for read/write to prevent contention (audio glitches)
+        self._read_lock = threading.Lock()
+        self._write_lock = threading.Lock()
         self.in_stream = self.pya.open(
             format=pyaudio.paInt16,
             channels=1,
@@ -90,7 +98,11 @@ class UltraAudio:
                 # Run write in executor to avoid blocking asyncio loop
                 # Wrap in try-except block specifically for the write operation
                 try:
-                    await loop.run_in_executor(None, self.out_stream.write, data)
+                    # Use write lock only (doesn't block mic reads)
+                    def write_with_lock():
+                        with self._write_lock:
+                            self.out_stream.write(data)
+                    await loop.run_in_executor(None, write_with_lock)
                 except OSError as e:
                      if self.running:
                          print(f"Audio Write Error: {e}")
@@ -120,7 +132,8 @@ class UltraAudio:
 
     def read_mic(self):
         try:
-            return self.in_stream.read(self.chunk_size, exception_on_overflow=False)
+            with self._read_lock:
+                return self.in_stream.read(self.chunk_size, exception_on_overflow=False)
         except OSError:
             return b'\x00' * self.chunk_size
 
@@ -152,13 +165,21 @@ class HistoryManager:
     def add_turn(self, role, text):
         if not text: return
         self.history.append({"role": role, "text": text})
+        
+        # Save to permanent SQLite memory
+        db_role = "assistant" if role.lower() == "jarvis" else "user"
+        try:
+            add_message(db_role, text)
+        except Exception as e:
+            print(f"Memory Sync Error: {e}")
+            
         if len(self.history) > self.max_turns:
             self.history.pop(0)
 
     def get_context_string(self):
         if not self.history:
             return ""
-        lines = ["\n[RECENT CONVERSATION HISTORY (Session Restored)]"]
+        lines = [f"\n[TRANSCRIPT FOR SESSION {get_current_conversation_id()}]"]
         for turn in self.history:
             lines.append(f"{turn['role']}: {turn['text']}")
         lines.append("[End of History]\n")
@@ -205,6 +226,13 @@ class JarvisSession:
             print(f"DB Error: {e}")
 
         self._tools = self._build_tools()
+        
+        # Pre-initialize Client to speed up first connection
+        self._current_client_key = self.keys[0]
+        self.client = genai.Client(
+            api_key=self._current_client_key,
+            http_options={'api_version': MODELS.gemini_live_api_version}
+        )
         self._current_task = None # Main asyncio task
         self.thread = None
 
@@ -278,13 +306,39 @@ class JarvisSession:
     def _build_system_prompt(self, recent_context=None):
         user_facts = get_facts_for_prompt()
         user_preferences = get_preferences_for_prompt()
+        last_summary = get_last_session_summary()
+        
+        # Pull relevant long-term context if we have recent turns
+        long_term_context = ""
+        if self.history.history:
+            # Search database for context related to the last turn
+            last_turn = self.history.history[-1]["text"]
+            if len(last_turn) > 5:
+                try:
+                    search_res = search_memory(last_turn, limit=2)
+                    if "I couldn't find any" not in search_res:
+                        long_term_context = f"\n[RELEVANT LONG-TERM MEMORY]\n{search_res}\n"
+                except Exception:
+                    pass
+
+        context = recent_context or ""
+        if last_summary:
+            context = f"[LAST SESSION SUMMARY: {last_summary}]\n" + context
+        
+        if long_term_context:
+            context = long_term_context + context
+            
         return SYSTEM_PROMPT_TEMPLATE.format(
+            soul_personality=load_soul(),
             user_facts=user_facts if user_facts else "",
             user_preferences=user_preferences if user_preferences else "",
-            recent_context=recent_context or ""
+            recent_context=context
         )
 
     def _execute_tool(self, name, args):
+        import concurrent.futures
+        TOOL_TIMEOUT = 15  # seconds
+
         try:
             if name == "exit_jarvis":
                 self.stop()
@@ -299,19 +353,41 @@ class JarvisSession:
             
             elif name in TOOLS:
                 fn = TOOLS[name]["function"]
-                # Type coercion logic...
+                # Type coercion logic
                 clean_args = {}
                 for k, v in args.items():
                     if isinstance(v, str) and v.isdigit():
                         clean_args[k] = int(v)
                     else:
-                        clean_args[k] = v # simplified
+                        clean_args[k] = v
                 
-                result = fn(**clean_args)
+                # Execute with timeout to prevent hangs
+                start_time = time.time()
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(fn, **clean_args)
+                    try:
+                        result = future.result(timeout=TOOL_TIMEOUT)
+                    except concurrent.futures.TimeoutError:
+                        print(f"⏱️ Tool '{name}' timed out after {TOOL_TIMEOUT}s")
+                        return f"Tool '{name}' timed out after {TOOL_TIMEOUT} seconds. Please try again."
+                
+                duration = time.time() - start_time
+                print(f"🔧 Tool '{name}' completed in {duration:.1f}s")
                 return str(result)
             return f"Unknown tool: {name}"
         except Exception as e:
-            return f"Error executing {name}: {e}"
+            error_msg = f"Error executing {name}: {e}"
+            print(f"❌ {error_msg}")
+            # Retry once for network-related errors
+            if any(keyword in str(e).lower() for keyword in ['timeout', 'connection', 'network', 'socket', 'refused']):
+                try:
+                    print(f"🔄 Retrying {name} after network error...")
+                    time.sleep(1)
+                    result = TOOLS[name]["function"](**args)
+                    return str(result)
+                except Exception as retry_e:
+                    return f"Tool '{name}' failed after retry: {retry_e}"
+            return error_msg
 
     async def _session_loop(self):
         """Main internal loop interacting with Gemini"""
@@ -319,7 +395,6 @@ class JarvisSession:
         self.state["active"] = True
         
         while self.state["active"]:
-            client = None
             self._update_status("INITIALIZING")
             
             # Key rotation logic omitted for brevity, essential parts kept
@@ -338,11 +413,15 @@ class JarvisSession:
                 if not self.state.get("session_handle"):
                      history_context = self.history.get_context_string()
 
-                client = genai.Client(
-                    api_key=key,
-                    http_options={'api_version': MODELS.gemini_live_api_version}
-                )
-                _agent_log("session_manager.py:_session_loop", "client_created", hypothesis_id="H3")
+                # Use pre-initialized client if possible
+                if self._current_client_key != key:
+                     print(f"🔑 Key rotation: Updating client...")
+                     self._current_client_key = key
+                     self.client = genai.Client(
+                         api_key=key,
+                         http_options={'api_version': MODELS.gemini_live_api_version}
+                     )
+                
                 speech_config = types.SpeechConfig(
                     voice_config=types.VoiceConfig(
                         prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=current_voice)
@@ -376,7 +455,7 @@ class JarvisSession:
                         self._update_status("CONNECTING")
                         _agent_log("session_manager.py:_session_loop", "connect_before", data={"model": self.model, "attempt": attempt+1}, hypothesis_id="H3")
                         
-                        async with client.aio.live.connect(model=self.model, config=config) as session:
+                        async with self.client.aio.live.connect(model=self.model, config=config) as session:
                             _agent_log("session_manager.py:_session_loop", "connect_ok", hypothesis_id="H3")
                             self._update_status("LISTENING")
                             self.state["is_ai_active"] = False
@@ -456,6 +535,14 @@ class JarvisSession:
                                                 self.state["is_ai_active"] = False
                                                 self.state["cooldown_until"] = time.time() + 0.8
                                                 self._update_status("LISTENING")
+                                                
+                                                # Trigger background learning on every interaction
+                                                try:
+                                                    transcript = self.history.get_context_string()
+                                                    asyncio.create_task(personalization.summarize_and_learn(transcript))
+                                                except Exception as le:
+                                                    print(f"Personalization trigger failed: {le}")
+                                                    
                                                 continue
         
                                             if hasattr(content, 'input_transcription') and content.input_transcription:
@@ -489,6 +576,8 @@ class JarvisSession:
                                                     types.FunctionResponse(id=fc.id, name=fc.name, response={"result": res})
                                                 )
                                             await session.send_tool_response(function_responses=fn_responses)
+                                            print(f"✅ Tool response sent, waiting for AI continuation...")
+                                            self._update_status("SPEAKING")  # AI will speak the result
         
                                         if response.session_resumption_update:
                                             if response.session_resumption_update.new_handle:
@@ -517,18 +606,46 @@ class JarvisSession:
                             receive_task = asyncio.create_task(receive_loop())
                             
                             # Watchdog Task
+                            watchdog_last_activity = time.time()
+                            heartbeat_interval = 30  # seconds
+                            last_heartbeat = time.time()
+
                             async def watchdog_loop():
+                                nonlocal watchdog_last_activity, last_heartbeat
                                 while self.state["active"] and current_run_active:
-                                    if self.state["status"] == "PROCESSING":
-                                        # If stuck in PROCESSING for > 25 seconds
-                                        if time.time() - last_activity > 25.0:
-                                            print("🚨 WATCHDOG: Session stuck in PROCESSING for > 25s. Force resetting.")
-                                            self.state["active"] = False # This will break send/receive loops
-                                            # We need to ensure we break the outer wait too
+                                    now = time.time()
+                                    idle_time = now - watchdog_last_activity
+
+                                    # Stuck in PROCESSING for > 12 seconds
+                                    if self.state["status"] == "PROCESSING" and idle_time > 12.0:
+                                        print("🚨 WATCHDOG: Session stuck in PROCESSING for > 12s. Force resetting.")
+                                        send_task.cancel()
+                                        receive_task.cancel()
+                                        break
+
+                                    # Dead connection: LISTENING with no activity for > 60 seconds 
+                                    if self.state["status"] == "LISTENING" and idle_time > 60.0:
+                                        print("🚨 WATCHDOG: No activity for 60s while LISTENING. Reconnecting...")
+                                        send_task.cancel()
+                                        receive_task.cancel()
+                                        break
+
+                                    # Heartbeat ping every 30s to keep connection alive
+                                    if now - last_heartbeat > heartbeat_interval:
+                                        try:
+                                            # Send a tiny silent audio frame as keepalive
+                                            silent_frame = b'\x00' * 320  # 10ms of silence at 16kHz
+                                            await session.send_realtime_input(
+                                                audio=types.Blob(data=silent_frame, mime_type="audio/pcm;rate=16000")
+                                            )
+                                            last_heartbeat = now
+                                        except Exception as e:
+                                            print(f"🚨 WATCHDOG: Heartbeat failed: {e}. Reconnecting...")
                                             send_task.cancel()
                                             receive_task.cancel()
                                             break
-                                    await asyncio.sleep(1.0)
+
+                                    await asyncio.sleep(2.0)
                             
                             watchdog_task = asyncio.create_task(watchdog_loop())
 
@@ -552,6 +669,8 @@ class JarvisSession:
                             # If manual stop, break retry loop
                             if not self.state["active"]:
                                 break
+                            # Session loop completed (e.g., a task finished) - continue for next turn
+                            # DON'T break here - stay in session for continuous conversation
                             
                     except Exception as e:
                         is_conflict = "409" in str(e) or "conflict" in str(e).lower()
@@ -587,12 +706,12 @@ class JarvisSession:
                         break
 
             finally:
-                _agent_log("session_manager.py:_session_loop", "finally_enter", data={"client_is_none": client is None}, hypothesis_id="H5")
+                _agent_log("session_manager.py:_session_loop", "finally_enter", data={"client_is_none": self.client is None}, hypothesis_id="H5")
                 try:
-                    if client is not None:
+                    if self.client is not None:
                         # client.aio.live.connect returns a context manager, but the client itself might need closing if we created it.
                         pass  # genai.Client usage might not require explicit close if just used for context manager, but good practice.
-                        if hasattr(client, 'aio') and hasattr(client.aio, 'aclose'):
+                        if hasattr(self.client, 'aio') and hasattr(self.client.aio, 'aclose'):
                              # It seems we need to await this if we want to be clean
                              pass 
                         # Actual client close:
@@ -608,6 +727,8 @@ class JarvisSession:
             if self.state["needs_voice_change"]:
                 self.state["needs_voice_change"] = False
                 continue # Re-loop to connect with new voice
+            # Otherwise, continue the loop for continuous conversation
+            # The session naturally reconnects for the next turn
 
         # End of Session
         if self.state.get("audio"):
@@ -651,8 +772,14 @@ class JarvisSession:
             # Helper to run learning without blocking
             def trigger_learning():
                 try:
+                   conv_id = get_current_conversation_id()
                    transcript = self.history.get_context_string()
-                   print(f"🧠 Triggering background learning on {len(transcript)} chars...")
+                   print(f"🧠 Triggering final background learning for session {conv_id}...")
+                   
+                   # Mark conversation as ended in DB
+                   end_conversation(conv_id)
+                   
+                   # Process facts/summary
                    asyncio.run(personalization.summarize_and_learn(transcript))
                 except Exception as e:
                    print(f"Learning trigger failed: {e}")
