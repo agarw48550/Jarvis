@@ -252,6 +252,86 @@ def add_message(role: str, content: str, conversation_id: Optional[int] = None) 
     return message_id
 
 
+
+def retrieve_relevant_context(query: str, limit: int = 5) -> str:
+    """
+    Hybrid retrieval of relevant context from facts and conversation history.
+    Uses both semantic search (if available) and keyword matching.
+    """
+    context_items = []
+    
+    try:
+        # Get embedding for the query
+        model = get_embedding_model()
+        query_embedding = text_to_embedding(query) if model else None
+
+        init_database()
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+
+        # --- Semantic Search (Facts) ---
+        if query_embedding:
+            try:
+                cursor.execute("SELECT fact, category, embedding FROM facts WHERE embedding IS NOT NULL")
+                for fact, category, emb_bytes in cursor.fetchall():
+                    if emb_bytes:
+                        sim = cosine_similarity(query_embedding, emb_bytes)
+                        if sim > 0.4:  # Threshold for relevance
+                            context_items.append((sim, f"CONFIRMED FACT: {fact}"))
+            except Exception as e:
+                print(f"⚠️ Semantic fact search failed: {e}")
+
+        # --- Keyword Search (Facts - Fallback/Supplement) ---
+        try:
+            # Simple keyword extraction (naive)
+            keywords = [w for w in query.split() if len(w) > 4]
+            for kw in keywords:
+                cursor.execute("SELECT fact FROM facts WHERE fact LIKE ?", (f"%{kw}%",))
+                for row in cursor.fetchall():
+                    item = f"CONFIRMED FACT: {row[0]}"
+                    # Avoid duplicates with a placeholder score
+                    if not any(item in x[1] for x in context_items):
+                        context_items.append((0.5, item)) 
+        except Exception as e:
+            print(f"⚠️ Keyword results failed: {e}")
+
+        # --- Semantic Search (History) ---
+        if query_embedding:
+            try:
+                # Get recent 50 messages to search within
+                cursor.execute("SELECT content, role, timestamp, embedding FROM messages WHERE embedding IS NOT NULL ORDER BY timestamp DESC LIMIT 50")
+                for content, role, timestamp, emb_bytes in cursor.fetchall():
+                    if emb_bytes:
+                        sim = cosine_similarity(query_embedding, emb_bytes)
+                        if sim > 0.35:
+                            context_items.append((sim, f"PAST CONVERSATION [{timestamp}] {role}: {content}"))
+            except Exception:
+                pass
+        
+        conn.close()
+
+    except Exception as e:
+        print(f"⚠️ Context retrieval failed: {e}")
+        return ""
+
+    # Sort by relevance
+    context_items.sort(key=lambda x: x[0], reverse=True)
+    
+    # Deduplicate and limit
+    seen = set()
+    final_text = []
+    for score, item in context_items:
+        if item not in seen:
+            seen.add(item)
+            final_text.append(item)
+        if len(final_text) >= limit:
+            break
+            
+    if not final_text:
+        return ""
+        
+    return "💡 RECALLED CONTEXT:\n" + "\n".join(final_text)
+
 def get_relevant_context(user_message: str, limit: int = 5) -> str:
     """
     Get relevant context from past conversations using RAG.

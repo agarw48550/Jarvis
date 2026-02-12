@@ -108,7 +108,10 @@ def _read_notification_db(count: int) -> str:
             conn.close()
             
     except Exception as e:
-        return f"📭 Could not read notification database: {e}. Try granting Full Disk Access in System Settings > Privacy & Security."
+        error_msg = str(e)
+        if "Operation not permitted" in error_msg:
+             return "⛔ Permission Denied: Jarvis needs 'Full Disk Access' to read notifications.\n👉 Go to System Settings > Privacy & Security > Full Disk Access -> Enable for Terminal/Python."
+        return f"📭 Could not read notification database: {error_msg}"
 
 
 def _extract_notification_title(data):

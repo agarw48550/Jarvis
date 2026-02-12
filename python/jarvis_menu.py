@@ -41,7 +41,30 @@ try:
     from AppKit import NSWorkspace, NSWorkspaceWillSleepNotification
     _HAS_PYOBJC = True
 except Exception:
+    _HAS_PYOBJC = True
+except Exception:
     _HAS_PYOBJC = False
+
+def ensure_single_instance():
+    """Ensure only one instance of Jarvis is running."""
+    import psutil
+    current_pid = os.getpid()
+    
+    for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+        try:
+            # Check if process is python and running jarvis_menu.py
+            if proc.info['name'] and 'python' in proc.info['name'].lower():
+                cmdline = proc.info['cmdline'] or []
+                if any('jarvis_menu.py' in arg for arg in cmdline):
+                    if proc.info['pid'] != current_pid:
+                        print(f"⚠️ Found existing instance (PID {proc.info['pid']}). Keying it...")
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=3)
+                        except psutil.TimeoutExpired:
+                            proc.kill()
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            pass
 
 class JarvisMenuApp(rumps.App):
     def __init__(self):
@@ -276,5 +299,10 @@ class JarvisMenuApp(rumps.App):
                      print(f"⚠️ [HEALTH] Failed to restart wakeword: {e}")
 
 if __name__ == "__main__":
+    try:
+        ensure_single_instance()
+    except Exception as e:
+        print(f"Singleton check failed: {e}")
+        
     app = JarvisMenuApp()
     app.run()

@@ -28,7 +28,7 @@ import numpy as np
 from google import genai
 from google.genai import types
 
-from core.config import API_KEYS, MODELS, AUDIO, SYSTEM_PROMPT_TEMPLATE, load_soul
+from core.config import API_KEYS, MODELS, AUDIO, SYSTEM_PROMPT_TEMPLATE, load_soul, DYNAMIC_STYLE
 from core.memory import (
     init_database, 
     get_facts_for_prompt, 
@@ -38,7 +38,8 @@ from core.memory import (
     add_message,
     get_last_session_summary,
     end_conversation,
-    get_current_conversation_id
+    get_current_conversation_id,
+    retrieve_relevant_context
 )
 from core.personalization import personalization
 from tools.tool_registry import TOOLS
@@ -311,13 +312,13 @@ class JarvisSession:
         # Pull relevant long-term context if we have recent turns
         long_term_context = ""
         if self.history.history:
-            # Search database for context related to the last turn
+            # Search database for context related to the last turn using Hybrid "Elephant" Search
             last_turn = self.history.history[-1]["text"]
-            if len(last_turn) > 5:
+            if len(last_turn) > 3:
                 try:
-                    search_res = search_memory(last_turn, limit=2)
-                    if "I couldn't find any" not in search_res:
-                        long_term_context = f"\n[RELEVANT LONG-TERM MEMORY]\n{search_res}\n"
+                    recalled_ctx = retrieve_relevant_context(last_turn, limit=3)
+                    if recalled_ctx:
+                        long_term_context = f"\n{recalled_ctx}\n"
                 except Exception:
                     pass
 
@@ -330,6 +331,7 @@ class JarvisSession:
             
         return SYSTEM_PROMPT_TEMPLATE.format(
             soul_personality=load_soul(),
+            dynamic_style=DYNAMIC_STYLE,
             user_facts=user_facts if user_facts else "",
             user_preferences=user_preferences if user_preferences else "",
             recent_context=context
