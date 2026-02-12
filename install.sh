@@ -40,10 +40,16 @@ brew install portaudio sox ffmpeg || echo "Dependencies already installed or fai
 # 3. Python Environment
 echo -e "\n${BOLD}🐍 Setting up Python environment...${NC}"
 
-# Check for python 3.11+
+# Check for Python
 if ! command -v python3 &> /dev/null; then
-    echo -e "${RED}❌ python3 not found.${NC}"
+    echo "Python 3 is required but not found."
     exit 1
+fi
+
+# Bootstrap SOUL.md if missing
+if [ ! -f "python/data/SOUL.md" ]; then
+    echo "Creating default SOUL.md..."
+    cp "python/data/SOUL.md.example" "python/data/SOUL.md"
 fi
 
 # Create venv if not exists

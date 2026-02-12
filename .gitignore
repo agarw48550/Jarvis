@@ -117,3 +117,4 @@ python/google_token_assistant.json
 # Database temp files
 *.db-shm
 *.db-wal
+python/data/SOUL.md
