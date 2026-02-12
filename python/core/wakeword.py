@@ -10,7 +10,8 @@ load_dotenv()
 
 class WakeWordListener:
     def __init__(self, callback, keyword_path=None, sensitivity=0.5):
-        self.access_key = os.getenv("PICOVOICE_ACCESS_KEY")
+        from core.config import API_KEYS
+        self.access_key = API_KEYS.picovoice_key
         
         # Default to the bundled file if not provided
         if not keyword_path:
@@ -49,10 +50,11 @@ class WakeWordListener:
 
         # Ensure access key is available at start time
         if not self.access_key:
-            self.access_key = os.getenv("PICOVOICE_ACCESS_KEY")
+            from core.config import API_KEYS
+            self.access_key = API_KEYS.picovoice_key
             
         if not self.access_key:
-            raise ValueError("PICOVOICE_ACCESS_KEY not found in .env")
+            raise ValueError("PICOVOICE_ACCESS_KEY not found in config or .env")
 
         try:
             keyword_paths = []

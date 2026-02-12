@@ -41,9 +41,52 @@ try:
     from AppKit import NSWorkspace, NSWorkspaceWillSleepNotification
     _HAS_PYOBJC = True
 except Exception:
-    _HAS_PYOBJC = True
-except Exception:
     _HAS_PYOBJC = False
+
+class UpdateManager(threading.Thread):
+    def __init__(self, interval=1800): # 30 mins
+        super().__init__(daemon=True)
+        self.interval = interval
+        self.running = True
+
+    def check_for_updates(self):
+        try:
+            # Check if we are in a git repo
+            if not os.path.exists(os.path.join(os.path.dirname(script_dir), ".git")):
+                return False
+                
+            # git fetch to check remote
+            subprocess.run(["git", "fetch"], check=True, capture_output=True, cwd=os.path.dirname(script_dir))
+            
+            # Compare HEAD with upstream
+            local = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=os.path.dirname(script_dir)).decode().strip()
+            remote = subprocess.check_output(["git", "rev-parse", "@{u}"], cwd=os.path.dirname(script_dir)).decode().strip()
+            
+            if local != remote:
+                print("🔄 [UPDATE] New version available! Updating...")
+                # git pull
+                subprocess.run(["git", "pull"], check=True, cwd=os.path.dirname(script_dir))
+                
+                # Re-install requirements if they changed
+                subprocess.run([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"], check=True, cwd=script_dir)
+                
+                # Notify and Restart
+                print("🚀 [UPDATE] Update complete. Restarting Jarvis...")
+                restart_script = os.path.join(script_dir, "restart_jarvis.sh")
+                if os.path.exists(restart_script):
+                    subprocess.Popen(["bash", restart_script])
+                return True
+        except Exception as e:
+            print(f"⚠️ [UPDATE] Check failed: {e}")
+        return False
+
+    def run(self):
+        # Initial wait to let system settle
+        time.sleep(60)
+        while self.running:
+            if self.check_for_updates():
+                break
+            time.sleep(self.interval)
 
 def ensure_single_instance():
     """Ensure only one instance of Jarvis is running."""
@@ -304,5 +347,8 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"Singleton check failed: {e}")
         
+    # Start auto-update manager
+    UpdateManager().start()
+    
     app = JarvisMenuApp()
     app.run()
