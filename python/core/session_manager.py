@@ -83,7 +83,27 @@ class UltraAudio:
             )
             return True
         except Exception as e:
-            print(f"Failed to reopen audio: {e}")
+            print(f"Failed to reopen output audio: {e}")
+            return False
+
+    def try_reopen_input(self):
+        """Attempts to restart the input stream on error"""
+        try:
+            if self.in_stream:
+                self.in_stream.close()
+            # Hardcoded values from __init__ since access to self.chunk_size is available
+            # but rate needs to be tracked.
+            # Assuming standard 16000 for input as per __init__ default/usage
+            self.in_stream = self.pya.open(
+                format=pyaudio.paInt16,
+                channels=1,
+                rate=16000, 
+                input=True,
+                frames_per_buffer=self.chunk_size
+            )
+            return True
+        except Exception as e:
+            print(f"Failed to reopen input audio: {e}")
             return False
 
     async def playback_worker(self, session_active_check_fn):
@@ -135,7 +155,10 @@ class UltraAudio:
         try:
             with self._read_lock:
                 return self.in_stream.read(self.chunk_size, exception_on_overflow=False)
-        except OSError:
+        except OSError as e:
+            print(f"🎤 Mic Read Error: {e}")
+            if self.try_reopen_input():
+                print("🎤 Mic recovered successfully.")
             return b'\x00' * self.chunk_size
 
     def close(self):
